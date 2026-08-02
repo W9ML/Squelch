@@ -1,0 +1,178 @@
+# squelch configuration
+# Copy to /etc/squelch/squelch.toml and edit.
+
+[node]
+# Display-only info shown in the page header
+number = "12345"
+callsign = "W9ML"
+
+# Origin badges resolve node numbers to callsigns using the public
+# AllStarLink database (refreshed daily). Private/unregistered nodes
+# aren't in it — name them here:
+[node.aliases]
+# 6453 = "DMR Bridge"
+
+[usrp]
+# Where squelch listens for the chan_usrp audio stream from the Pi.
+# Must match the first host:port in the rxchannel USRP/... string in
+# the Pi's rpt.conf (see README).
+bind = "0.0.0.0"
+port = 32001
+
+[audio]
+data_dir = "/var/lib/squelch"
+# Delete stored recordings after this many days (0 = keep forever).
+# Transcripts and metadata are always kept.
+retention_days = 30
+# Safety net: if the disk's free space drops below this many GB, the
+# OLDEST recordings are purged automatically (audio only; transcripts
+# stay) so a full disk can't take the service down. 0 disables.
+min_free_gb = 2.0
+# End a transmission after this long with no audio frames
+squelch_tail_ms = 400
+# Ignore transmissions shorter than this (kerchunks)
+min_tx_ms = 300
+# Force-split transmissions longer than this
+max_tx_secs = 300
+
+[transcribe]
+enabled = true
+# tiny.en / base.en / small.en / medium.en (and multilingual variants).
+# Also switchable at runtime from the web UI when logged in as admin.
+model = "base.en"
+device = "cpu"
+# int8 is fastest on CPU with little quality loss
+compute_type = "int8"
+language = "en"
+# Skip transcription and voice ID when a transmission is just an MDC
+# data burst with no speech (whisper hallucinates on tones)
+skip_mdc_only = true
+# Short natural-language context hint for whisper (e.g. "Ham radio net
+# traffic on the W9ML repeater in northwest Indiana."). Keep it a
+# SENTENCE — a list of callsigns primes whisper to hallucinate callsign
+# lists on marginal audio. Leave empty if unsure.
+initial_prompt = ""
+# Append named speakers' callsigns to the hint. OFF by default: it
+# tends to cause callsign-list hallucinations and a feedback loop.
+auto_prompt_callsigns = false
+
+[speaker_id]
+enabled = true
+# Cosine similarity needed to match a known voice (0-1). Narrowband
+# radio audio pushes all similarities upward — keep this strict or one
+# cluster will absorb everyone. Raise if people get merged, lower if
+# one person keeps spawning new Speaker entries.
+match_threshold = 0.86
+# Even higher bar to LEARN from an automatic match (protects profiles
+# from drifting). Manual and callsign assignments always enroll.
+learn_threshold = 0.92
+# Automatically create "Speaker N" entries for new voices
+autocluster = true
+# Skip voice ID for transmissions shorter than this (short clips make
+# unreliable voice prints)
+min_embed_ms = 1500
+# When a callsign is heard in the transcript ("this is W9ML", spelled
+# or phonetic), use it to identify the speaker — it overrides the voice
+# guess, names new voice clusters, and enrolls the voice automatically.
+use_callsigns = true
+
+[voter]
+# For voted (RTCM) systems: SSE voter-status streams to record during
+# transmissions. Works with plain Allmon2 voterserver.php URLs, or the
+# newer encrypted /api/nodes/<id>/voter endpoints (set key below).
+# sources = ["https://example.com/api/nodes/12345/voter"]
+sources = []
+# Seconds between kept samples; 0.1 keeps every event most servers emit
+# (~6-7/sec). Raise to reduce storage.
+min_interval = 0.1
+# Only poll a source's voter stream while its node is actually linked on
+# the Pi. Requires tools/source_monitor.py running there (it reports link
+# state to /api/link). Off = poll 24/7. When on but the reporter goes
+# silent, it fails open (keeps polling) so a dead monitor doesn't stop
+# voter capture. Good manners for a voterserver you don't own.
+gate_on_connect = false
+# AES-128 key (32 hex chars) for encrypted voter streams. Leave empty
+# for plaintext streams. Squelch is a server-side client, so it holds
+# the raw key directly (VOTER_STREAM_KEY on the dashboard side).
+key = ""
+
+# Receiver site coordinates for the (fuzzy) geolocation map. Keys are
+# the client/receiver names exactly as they appear in the voter stream.
+# Leave empty to disable the map. This is entertainment, not DF.
+[voter.receivers]
+# "Crown_Point" = [41.417, -87.365]
+# "LaPorte"     = [41.611, -86.723]
+# "Rensselaer"  = [40.936, -87.151]
+
+[mdc]
+# Decode MDC1200 from the received audio in squelch. Note: many repeaters
+# gate the pre-burst out of the audio before it reaches squelch, in which
+# case this finds nothing and you want the forwarder below instead.
+enabled = true
+# Optional shared secret for POST /api/mdc, used when the node's
+# mdc_forward.py ships app_rpt-decoded IDs to squelch. Leave empty on a
+# trusted LAN; if set, the forwarder must send the same token.
+forward_token = ""
+
+[dtmf]
+# Decode DTMF key presses onto each transmission and light up the live
+# keypad overlay. Uses chan_usrp's native DTMF frames when the node
+# sends them, otherwise a Goertzel detector over the audio.
+enabled = true
+
+[captions]
+# Streaming live captions: provisional text appears while someone is
+# still talking, then the full-model transcript replaces it on the card.
+# Runs its own small whisper model alongside the main one — only worth
+# enabling where whisper is fast (GPU). Off by default.
+enabled = false
+model = "small.en"
+# Empty = inherit [transcribe] device / compute_type
+device = ""
+compute_type = ""
+# Seconds between incremental decodes of the growing transmission
+interval = 1.2
+# Decode at most this much trailing audio per pass (bounds GPU cost on
+# long overs; earlier words are already committed and frozen)
+window_secs = 30.0
+
+[timemachine]
+# The Time Machine DVR — scrub the day's overs on one authoritative clock in
+# the browser (a login-gated entry in the account menu). Its voter vote-handoff
+# and fuzzy-geo lanes only appear for logged-in users (and, for geo, when
+# [voter] receivers are configured). Off by default.
+enabled = false
+
+[export]
+# Server-side render of a scrubbed Time Machine range into one MP4 (a waveform
+# video with burned-in captions), queued BEHIND live whisper transcription so
+# it never starves the pipeline; the ffmpeg child is niced. Requires ffmpeg.
+# Off by default; the render itself is admin-only.
+enabled = false
+# Cap a single render's timeline length (seconds).
+max_span_secs = 1800.0
+# Output video height in pixels (width is 16:9).
+video_height = 480
+
+[sayagain]
+# Cross-source callsign resolution: fuse Whisper's guess with the attributed
+# speaker's known call (voiceprint / MDC / manual), a strong spoken self-ID,
+# and QRZ/callook validity to CORRECT busted callsigns on the card (only when
+# 2+ independent sources agree; otherwise shown as-heard with a NATO spellback)
+# — plus tap "⟳" to replay just that callsign's audio span. All local, no
+# extra network. Off by default.
+enabled = false
+
+[web]
+bind = "0.0.0.0"
+port = 8080
+# Bootstraps the first "admin" account the very first time squelch starts
+# with an empty database. After that, manage users/passwords from the
+# web UI (this value is ignored once any user exists). Leave empty to
+# run view-only until you set one.
+admin_password = "changeme"
+# Initial site name (top-left); editable later in the admin settings
+# panel, which then takes precedence over this value.
+site_name = "Squelch"
+# Editable from the admin settings panel; shown at the bottom of the page.
+footer_text = ""

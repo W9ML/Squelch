@@ -1,0 +1,24 @@
+[Unit]
+Description=squelch MDC-1200 forwarder (runs on the AllStar node)
+After=network-online.target asterisk.service
+Wants=network-online.target
+
+# Install on the Raspberry Pi (the node), NOT the squelch VM:
+#   sudo cp mdc_forward.py /usr/local/bin/squelch-mdc-forward
+#   sudo cp squelch-mdc-forward.service /etc/systemd/system/
+#   edit the ExecStart URL below to point at the VM, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now squelch-mdc-forward
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/squelch-mdc-forward \
+    --log /var/log/asterisk/mdc.log \
+    --url http://<vm-ip>:8080
+# if you set [mdc] forward_token in squelch.toml, pass it here too:
+# Environment=SQUELCH_MDC_TOKEN=yoursecret
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+#!/bin/sh
+# Ensure /dev/nvidia-uvm exists before a CUDA app (faster-whisper) starts.
+#
+# Some boots load the NVIDIA driver + nvidia_uvm module but never create the
+# UVM device node, so CUDA dies with "CUDA failed with error unknown error"
+# and nothing transcribes until someone runs nvidia-smi/nvidia-modprobe by hand.
+# Create + verify the node here, retrying a few times while the driver settles
+# right after a cold boot.
+for i in 1 2 3 4 5 6 7 8; do
+  /usr/bin/nvidia-modprobe -c 0 -u 2>/dev/null
+  if [ -e /dev/nvidia-uvm ] && [ -e /dev/nvidia-uvm-tools ]; then
+    echo "nvidia-uvm-ensure: /dev/nvidia-uvm ready (attempt $i)"
+    exit 0
+  fi
+  sleep 1
+done
+echo "nvidia-uvm-ensure: WARNING /dev/nvidia-uvm still missing after 8 tries; CUDA may fail" >&2
+exit 0   # non-fatal: let squelch's web UI come up even if the GPU is truly dead

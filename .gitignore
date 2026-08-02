@@ -1,0 +1,37 @@
+# --- Python ---
+.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+
+# --- Node / Next.js build output ---
+web/node_modules/
+web/.next/
+web/out/
+
+# --- Runtime data, ML models, databases (large / machine-local) ---
+data/
+models/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.wav
+
+# --- Packaging snapshots / archives (git replaces these) ---
+*.tar.gz
+*.tgz
+*.zip
+
+# --- Local config (the tracked template is config.example.toml) ---
+config.toml
+config.dev.toml
+*.local.toml
+
+# --- Logs / secrets / editor / agent-local ---
+*.log
+.env
+.env.*
+.claude/
+.DS_Store

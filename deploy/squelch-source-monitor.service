@@ -1,0 +1,25 @@
+[Unit]
+Description=squelch traffic-origin monitor (runs on the AllStar node)
+After=network-online.target asterisk.service
+Wants=network-online.target
+
+# Install on the Raspberry Pi (the node), NOT the squelch VM:
+#   sudo cp source_monitor.py /usr/local/bin/squelch-source-monitor
+#   sudo cp squelch-source-monitor.service /etc/systemd/system/
+#   edit --node/--url/--ignore below, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now squelch-source-monitor
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/squelch-source-monitor \
+    --node <your-node> \
+    --url http://<vm-ip>:8080 \
+    --ignore 1992
+# if you set [mdc] forward_token in squelch.toml, pass it here too:
+# Environment=SQUELCH_MDC_TOKEN=yoursecret
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+[Unit]
+Description=squelch - AllStar node monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=squelch
+Group=squelch
+WorkingDirectory=/opt/squelch/app
+ExecStart=/opt/squelch/venv/bin/python -m squelch --config /etc/squelch/squelch.toml
+Restart=always
+RestartSec=5
+# whisper models download into the data dir on first use
+Environment=HF_HOME=/var/lib/squelch/models
+
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/squelch
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

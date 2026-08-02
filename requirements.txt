@@ -1,0 +1,21 @@
+# core
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+cryptography>=42.0
+numpy>=1.26
+scipy>=1.11
+# voter SSE streaming (VoterCollector). Only needed when [voter] sources are
+# configured, but declared so a fresh install doesn't crash on import.
+requests>=2.31
+
+# web push (VAPID) for phone/desktop alerts when the app is closed. Optional:
+# squelch runs fine without it — push is just disabled. Pulls py-vapid + http-ece.
+pywebpush>=1.14
+
+# transcription (faster-whisper pulls in ctranslate2; CPU-only, no GPU needed)
+faster-whisper>=1.0
+
+# speaker identification (pulls in torch CPU + librosa; the largest install.
+# squelch runs fine without it — voice ID is just disabled.)
+resemblyzer>=0.1.3

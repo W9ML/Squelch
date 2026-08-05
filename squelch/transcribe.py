@@ -46,6 +46,7 @@ except ImportError:
 _NATO = ("Alpha Bravo Charlie Delta Echo Foxtrot Golf Hotel India Juliet "
          "Kilo Lima Mike November Oscar Papa Quebec Romeo Sierra Tango "
          "Uniform Victor Whiskey Xray Yankee Zulu")
+_PHON_SET = frozenset(w.lower() for w in _NATO.split())
 
 # Whisper's training-data ghosts: phrases it conjures from noise because
 # they ended a million YouTube videos. Matched per-SEGMENT (normalized),
@@ -96,6 +97,23 @@ def _is_ghost(text: str) -> bool:
     if norm in _GHOST_EXACT or norm.startswith(_GHOST_PREFIXES):
         return True
     return any(g in norm for g in _GHOST_CONTAINS)
+
+
+# Whisper, biased by the callsign hotwords, will "recite" the NATO alphabet
+# over a garbled or quiet tail (a fluttering mobile that stays keyed, say): a
+# long run of phonetic words, often sequential, whose word timestamps stretch a
+# single token across many seconds -- durations no real speech has. A genuine
+# spoken callsign is short (<=6 phonetic words) and normally paced, so it sails
+# through both tests. Word durations come from word_timestamps (may be empty).
+def _is_hallucinated_segment(text: str, word_durs) -> bool:
+    if any(d > 2.5 for d in word_durs):
+        return True                            # a token stretched past speech
+    toks = re.findall(r"[a-z']+", text.lower())
+    if len(toks) >= 8:
+        phon = sum(1 for t in toks if t in _PHON_SET)
+        if phon / len(toks) >= 0.7:
+            return True                        # alphabet recitation, not an ID
+    return False
 
 
 class Transcriber:
@@ -207,20 +225,28 @@ class Transcriber:
             hotwords=_NATO if use_hotwords else None,
             vad_filter=False,
             word_timestamps=True,
+            # suppress text invented across a silent gap longer than this —
+            # exactly how a hallucinated tail detaches from real speech
+            hallucination_silence_threshold=2.0,
             no_speech_threshold=0.5)
         texts, words = [], []
         for seg in segments:
             nsp = getattr(seg, "no_speech_prob", 0.0) or 0.0
             alp = getattr(seg, "avg_logprob", 0.0) or 0.0
             cr = getattr(seg, "compression_ratio", 1.0) or 1.0
+            segw = getattr(seg, "words", None) or []
             if nsp > 0.6 and alp < -1.0:
                 continue                       # confident it's not speech
             if cr > 2.4:
                 continue                       # repetition-loop artifact
             if _is_ghost(seg.text):
                 continue                       # training-data ghost phrase
+            if _is_hallucinated_segment(seg.text,
+                                        [w.end - w.start for w in segw]):
+                continue                       # phonetic recitation / a token
+                                               # stretched over a garbled tail
             texts.append(seg.text.strip())
-            for w in (getattr(seg, "words", None) or []):
+            for w in segw:
                 words.append([w.word.strip(), round(w.start, 2),
                               round(w.end, 2)])
         text = " ".join(texts).strip()

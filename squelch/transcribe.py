@@ -102,17 +102,20 @@ def _is_ghost(text: str) -> bool:
 # Whisper, biased by the callsign hotwords, will "recite" the NATO alphabet
 # over a garbled or quiet tail (a fluttering mobile that stays keyed, say): a
 # long run of phonetic words, often sequential, whose word timestamps stretch a
-# single token across many seconds -- durations no real speech has. A genuine
-# spoken callsign is short (<=6 phonetic words) and normally paced, so it sails
-# through both tests. Word durations come from word_timestamps (may be empty).
+# single token across many seconds -- durations no real speech has. That is the
+# first test. The second catches a normally-paced phonetic run, but a real
+# callsign always carries a DIGIT (W3FDE, W9ML) and the bare alphabet recitation
+# does not -- so a two-call exchange ("Whiskey 3 Foxtrot Delta Echo from Whiskey
+# 9 Mike Lima", ~70% NATO across 8 tokens) is spared by the digit test.
+# Word durations come from word_timestamps (may be empty).
 def _is_hallucinated_segment(text: str, word_durs) -> bool:
     if any(d > 2.5 for d in word_durs):
         return True                            # a token stretched past speech
     toks = re.findall(r"[a-z']+", text.lower())
-    if len(toks) >= 8:
+    if len(toks) >= 8 and not any(c.isdigit() for c in text):
         phon = sum(1 for t in toks if t in _PHON_SET)
         if phon / len(toks) >= 0.7:
-            return True                        # alphabet recitation, not an ID
+            return True                        # digit-less alphabet recitation
     return False
 
 

@@ -186,6 +186,13 @@ class Config:
     # self-ID + QRZ to correct busted calls) plus tap-to-loop replay on the card
     sayagain_enabled: bool = False
 
+    # [elevenlabs] — optional ON-DEMAND cloud "second opinion" reprocess. Admin
+    # per-over action only; the live pipeline stays fully local. The API key is
+    # read from the ELEVENLABS_API_KEY env var, never from this file.
+    elevenlabs_enabled: bool = False
+    elevenlabs_model: str = "scribe_v2"
+    elevenlabs_language: str = "eng"       # ISO-639-3; "" = auto-detect
+
     # [web]
     web_bind: str = "0.0.0.0"
     web_port: int = 8080
@@ -325,6 +332,11 @@ def load_config(path: str | Path) -> Config:
 
     sa = raw.get("sayagain", {})
     cfg.sayagain_enabled = bool(sa.get("enabled", cfg.sayagain_enabled))
+
+    el = raw.get("elevenlabs", {})
+    cfg.elevenlabs_enabled = bool(el.get("enabled", cfg.elevenlabs_enabled))
+    cfg.elevenlabs_model = el.get("model", cfg.elevenlabs_model)
+    cfg.elevenlabs_language = el.get("language", cfg.elevenlabs_language)
 
     web = raw.get("web", {})
     cfg.web_bind = web.get("bind", cfg.web_bind)

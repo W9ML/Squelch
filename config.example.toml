@@ -163,6 +163,19 @@ video_height = 480
 # extra network. Off by default.
 enabled = false
 
+[elevenlabs]
+# Optional ON-DEMAND cloud "second opinion". When enabled, an admin can
+# reprocess ONE transmission through ElevenLabs Scribe from the card's menu
+# (handy for an over whisper garbled). The live pipeline stays fully local --
+# only the overs you explicitly click are ever sent off the box. Off by default.
+enabled = false
+# model + language for the cloud pass (language is ISO-639-3; "" = auto-detect)
+model = "scribe_v2"
+language = "eng"
+# The API key is read from the ELEVENLABS_API_KEY environment variable, NOT this
+# file (it's a live credential). e.g. add to the systemd unit:
+#   Environment=ELEVENLABS_API_KEY=sk_...
+
 [web]
 bind = "0.0.0.0"
 port = 8080

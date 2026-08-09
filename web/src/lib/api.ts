@@ -122,6 +122,7 @@ export const api = {
   },
   facets: () => request<Facets>("/api/facets"),
   reprocess: (id: number) => post(`/api/transmissions/${id}/reprocess`),
+  secondOpinion: (id: number) => post(`/api/transmissions/${id}/second_opinion`),
   deleteTransmission: (id: number) => del(`/api/transmissions/${id}`),
   purgeCount: (start: number, end: number) =>
     request<{ count: number }>(`/api/transmissions/purge_count?start=${start}&end=${end}`),

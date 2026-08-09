@@ -253,6 +253,7 @@ export function TransmissionCard({
     useApp();
   const bus = useRef<EventTarget>(new EventTarget()).current;
   const [reprocessing, setReprocessing] = useState(false);
+  const [secondOp, setSecondOp] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [shared, setShared] = useState(false);
@@ -493,6 +494,15 @@ export function TransmissionCard({
             </span>
           )}
 
+          {tx.transcript_model?.startsWith("elevenlabs") && (
+            <span
+              className="el-badge"
+              title="Transcript from ElevenLabs (cloud second opinion), not the local model"
+            >
+              ElevenLabs
+            </span>
+          )}
+
           <span className="head-right">
             <span title={new Date(tx.started_at * 1000).toLocaleString()}>
               {fmtTime(tx.started_at)}
@@ -559,6 +569,27 @@ export function TransmissionCard({
                           >
                             <FontAwesomeIcon icon={ICONS.reprocess} /> Reprocess
                           </button>
+                          {status?.has_elevenlabs && (
+                            <button
+                              className="card-menu-item"
+                              role="menuitem"
+                              disabled={secondOp}
+                              title="Re-transcribe this over via ElevenLabs (cloud) — sends only this recording"
+                              onClick={async () => {
+                                setMenuOpen(false);
+                                setSecondOp(true);
+                                try {
+                                  await api.secondOpinion(tx.id);
+                                } catch (e) {
+                                  alert("Second opinion failed: " + (e as Error).message);
+                                } finally {
+                                  setTimeout(() => setSecondOp(false), 1500);
+                                }
+                              }}
+                            >
+                              <FontAwesomeIcon icon={ICONS.reprocess} /> Second opinion (ElevenLabs)
+                            </button>
+                          )}
                           <button
                             className="card-menu-item"
                             role="menuitem"

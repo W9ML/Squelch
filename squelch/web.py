@@ -22,7 +22,8 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, geo, qrz, tabexport, usrp, watchdog, webpush
+from . import (__version__, elevenlabs_stt, geo, qrz, tabexport, usrp,
+               watchdog, webpush)
 from .auth import SESSION_COOKIE, SESSION_TTL, AuthManager
 from .callsigns import CALL_RE
 from .config import Config, WHISPER_MODELS
@@ -791,6 +792,8 @@ def create_app(cfg: Config) -> FastAPI:
             "has_export": cfg.export_enabled,
             # Say Again: cross-source callsign resolution + tap-to-loop (public)
             "has_sayagain": cfg.sayagain_enabled,
+            # ElevenLabs on-demand "second opinion" reprocess (admin action)
+            "has_elevenlabs": cfg.elevenlabs_enabled and elevenlabs_stt.available(),
             "footer_text": db.get_setting("footer_text", cfg.footer_text),
             "logo_ts": db.get_setting("logo_ts"),
             # QRZ XML config state, for the settings panel (never the password)
@@ -1055,6 +1058,19 @@ def create_app(cfg: Config) -> FastAPI:
         require_admin(request)
         try:
             await pipeline.request_reprocess(tx_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True}
+
+    @app.post("/api/transmissions/{tx_id}/second_opinion")
+    async def second_opinion_transmission(tx_id: int, request: Request):
+        # on-demand cloud re-transcribe of ONE over via ElevenLabs (admin only,
+        # only when configured + a key is present)
+        require_admin(request)
+        if not (cfg.elevenlabs_enabled and elevenlabs_stt.available()):
+            raise HTTPException(status_code=404, detail="ElevenLabs not configured")
+        try:
+            await pipeline.request_second_opinion(tx_id)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         return {"ok": True}

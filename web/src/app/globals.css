@@ -880,6 +880,23 @@ body {
 }
 .hub-badge::before { content: "\21E2"; opacity: .6; font-size: .85em; }
 
+/* ElevenLabs cloud "second opinion" provenance — a distinct accent pill so you
+   can tell at a glance which overs were cloud-transcribed, not local whisper */
+.el-badge {
+  border-radius: 99px;
+  padding: 2px 10px 2px 8px;
+  font-size: .69rem;
+  font-family: var(--mono);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+}
+.el-badge::before { content: "\2601"; opacity: .75; font-size: .9em; }
+
 /* Network status modal: per-hub roster */
 .netview .net-hub { margin-bottom: 16px; }
 .netview .net-hub h4 { display: flex; align-items: center; gap: 8px; }

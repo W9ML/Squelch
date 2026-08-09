@@ -22,7 +22,8 @@ from pathlib import Path
 import numpy as np
 from scipy.signal import resample_poly
 
-from . import callbook, dtmf, mdc1200, qrz, signal_quality, watchlist, webpush
+from . import (callbook, dtmf, elevenlabs_stt, mdc1200, qrz, signal_quality,
+               watchlist, webpush)
 from .callsigns import extract_callsigns, speaker_callsign
 from .config import Config, WHISPER_MODELS
 from .db import Database
@@ -267,6 +268,36 @@ class Pipeline:
             embedding=None, status="processing")
         await self._push_update(tx_id)
         await self._queue.put((tx_id, tx, True))
+
+    async def request_second_opinion(self, tx_id: int) -> None:
+        """Admin action: re-transcribe ONE stored over through ElevenLabs Scribe
+        (cloud) and replace just its transcript + word timings. The local whisper
+        pipeline is untouched and only this over's audio is sent -- an explicit,
+        per-over choice. Raises ValueError (user-facing) on failure; the DB is
+        written only on a successful cloud result, so an error leaves the
+        existing transcript intact. Callsign chips + Say Again re-derive from the
+        new transcript at read time; voice-ID attribution is left alone."""
+        if not self.cfg.elevenlabs_enabled:
+            raise ValueError("ElevenLabs reprocessing is not enabled")
+        path = await asyncio.to_thread(self.db.get_audio_path, tx_id)
+        if not path or not Path(path).exists():
+            raise ValueError("audio no longer stored for this transmission")
+        try:
+            text, words = await asyncio.to_thread(
+                elevenlabs_stt.transcribe_file, path,
+                self.cfg.elevenlabs_model,
+                self.cfg.elevenlabs_language or None)
+        except elevenlabs_stt.ElevenLabsError as e:
+            raise ValueError(f"ElevenLabs: {e}")
+        await asyncio.to_thread(
+            self.db.update_transmission, tx_id,
+            transcript=text,
+            words=json.dumps(words) if words else None,
+            transcript_model=f"elevenlabs/{self.cfg.elevenlabs_model}",
+            status="done")
+        log.info("tx %d: reprocessed via ElevenLabs (%d words)",
+                 tx_id, len(words))
+        await self._push_update(tx_id)
 
     async def _process(self, tx_id: int, tx: Transmission) -> None:
         # audio + waveform peaks (+ voter slice) were already saved in

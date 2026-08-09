@@ -131,6 +131,8 @@ export interface Status {
   has_export?: boolean;
   /** Say Again — cross-source callsign resolution + tap-to-loop */
   has_sayagain?: boolean;
+  /** ElevenLabs on-demand "second opinion" reprocess is available (admin) */
+  has_elevenlabs?: boolean;
 }
 
 export interface Connection {

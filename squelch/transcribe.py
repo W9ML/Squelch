@@ -87,6 +87,9 @@ _GHOST_CONTAINS = (
     "united states of america",
     "subscribe",
     "like button",
+    # broadcast-credit tag whisper conjures on dead-air keyups, especially
+    # when a callsign is in the prompt ("W9ML is a production of W9ML")
+    "is a production of",
 )
 
 

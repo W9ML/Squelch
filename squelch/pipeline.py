@@ -874,12 +874,17 @@ class Pipeline:
         # ("N9PRK, N9PRK, ...") can't dilute the prompt-overlap ratio
         twords = set(w for w in re.findall(r"[A-Za-z0-9']+", text.lower())
                      if len(w) > 2)
-        if len(twords) < 4:
+        if not twords:
             return False
         pwords = set(w for w in re.findall(r"[A-Za-z0-9']+", prompt.lower())
                      if len(w) > 2)
         overlap = sum(1 for w in twords if w in pwords)
-        return overlap / len(twords) >= 0.6
+        # a normal-length transcript that's mostly prompt vocab is an echo; a
+        # very short one (a dead-air keyup parroting "<call> <call>") counts
+        # only when EVERY distinct word came from the prompt
+        if len(twords) >= 4:
+            return overlap / len(twords) >= 0.6
+        return overlap == len(twords)
 
     def _whisper_prompt(self) -> str | None:
         """Vocabulary hint for whisper: the configured prompt plus the

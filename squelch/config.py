@@ -186,6 +186,17 @@ class Config:
     # self-ID + QRZ to correct busted calls) plus tap-to-loop replay on the card
     sayagain_enabled: bool = False
 
+    # [storm] — stuck-repeater gate: when the repeater is keyed most of a
+    # rolling window AND re-keying at a machine-gun rate (an intermod loop,
+    # never a human), pause transcription + voice ID until it clears. Audio is
+    # still stored. Both conditions must hold, so neither a long ragchew (one
+    # keyup) nor a snappy net (low duty) can trip it.
+    storm_enabled: bool = True
+    storm_window_secs: float = 90.0
+    storm_on_duty: float = 0.45
+    storm_off_duty: float = 0.20
+    storm_on_rate_per_min: float = 12.0
+
     # [elevenlabs] — optional ON-DEMAND cloud "second opinion" reprocess. Admin
     # per-over action only; the live pipeline stays fully local. The API key is
     # read from the ELEVENLABS_API_KEY env var, never from this file.
@@ -332,6 +343,14 @@ def load_config(path: str | Path) -> Config:
 
     sa = raw.get("sayagain", {})
     cfg.sayagain_enabled = bool(sa.get("enabled", cfg.sayagain_enabled))
+
+    st = raw.get("storm", {})
+    cfg.storm_enabled = bool(st.get("enabled", cfg.storm_enabled))
+    cfg.storm_window_secs = float(st.get("window_secs", cfg.storm_window_secs))
+    cfg.storm_on_duty = float(st.get("on_duty", cfg.storm_on_duty))
+    cfg.storm_off_duty = float(st.get("off_duty", cfg.storm_off_duty))
+    cfg.storm_on_rate_per_min = float(
+        st.get("on_rate_per_min", cfg.storm_on_rate_per_min))
 
     el = raw.get("elevenlabs", {})
     cfg.elevenlabs_enabled = bool(el.get("enabled", cfg.elevenlabs_enabled))

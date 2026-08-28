@@ -15,11 +15,22 @@ function statusPill(
   wsOpen: boolean,
   wsConnected: boolean,
   rxActive: boolean,
+  stormActive: boolean,
   status: Status | null,
 ) {
   if (!wsOpen) return { cls: "down", text: "offline", title: "not connected to the server" };
   if (!wsConnected)
     return { cls: "reconnecting", text: "reconnecting", title: "lost the live feed — reconnecting…" };
+  // storm outranks "on air": during a stuck-carrier event RX is active nearly
+  // continuously, and the useful fact is that transcription is paused
+  if (stormActive)
+    return {
+      cls: "storm",
+      text: "high activity — paused",
+      title:
+        "the repeater is keyed almost continuously (stuck carrier / intermod?) — " +
+        "recordings continue, transcription resumes when it clears",
+    };
   if (rxActive) return { cls: "on-air", text: "on air", title: "the node is receiving right now" };
   // connected to the server but the node has never sent audio — visibly
   // distinct from a healthy-but-idle system so setup problems aren't hidden
@@ -48,6 +59,7 @@ export function Header() {
     wsOpen,
     wsConnected,
     rxActive,
+    stormActive,
     paused,
     togglePaused,
     openModal,
@@ -67,7 +79,7 @@ export function Header() {
   const node = status?.brand_node || status?.node_number;
   const nodeLine = status?.node_label || (node ? `Node ${node}` : null);
   const sub = [cs, nodeLine].filter(Boolean).join(" · ");
-  const pill = statusPill(wsOpen, wsConnected, rxActive, status);
+  const pill = statusPill(wsOpen, wsConnected, rxActive, stormActive, status);
   const themes = status?.themes || [];
 
   return (

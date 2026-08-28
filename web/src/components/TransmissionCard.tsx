@@ -652,9 +652,11 @@ export function TransmissionCard({
           <div className="transcript none">
             {tx.status === "error"
               ? "processing failed"
-              : tx.mdc && tx.mdc.length
-                ? "MDC data burst — no voice"
-                : "no speech recognized"}
+              : tx.transcript_model === "storm-skipped"
+                ? "skipped — repeater storm (admin: Reprocess to transcribe)"
+                : tx.mdc && tx.mdc.length
+                  ? "MDC data burst — no voice"
+                  : "no speech recognized"}
           </div>
         )}
 

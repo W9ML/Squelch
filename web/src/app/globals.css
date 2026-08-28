@@ -432,6 +432,9 @@ body {
 .conn-tabs { margin-bottom: 12px; }
 .status-pill.no-audio { color: #d18616; border-color: transparent; background: color-mix(in srgb, #f59e0b 14%, transparent); }
 .status-pill.no-audio .dot { background: #f59e0b; animation: pulse 1.6s infinite; }
+/* stuck-repeater storm: transcription paused until the carrier clears */
+.status-pill.storm { color: #d18616; border-color: transparent; background: color-mix(in srgb, #f59e0b 14%, transparent); }
+.status-pill.storm .dot { background: #f59e0b; animation: pulse 0.8s infinite; }
 
 /* first-run "connect your node" hint (admin-only, hidden once audio arrives) */
 .node-hint {

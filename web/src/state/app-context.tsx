@@ -66,6 +66,8 @@ interface AppContextValue {
   canSettings: boolean;
   username: string | null;
   rxActive: boolean;
+  /** stuck-repeater gate is up — transcription paused */
+  stormActive: boolean;
   /** live count of open connections to the site (logged-in users only) */
   connections: number;
   setConnections: (n: number) => void;
@@ -102,6 +104,7 @@ interface AppContextValue {
   setWsOpen: (b: boolean) => void;
   setWsConnected: (b: boolean) => void;
   setRxActive: (b: boolean) => void;
+  setStormActive: (b: boolean) => void;
 
   paused: boolean;
   togglePaused: () => void;
@@ -156,6 +159,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [wsOpen, setWsOpen] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const [rxActive, setRxActive] = useState(false);
+  const [stormActive, setStormActive] = useState(false);
   const [connections, setConnections] = useState(0);
   const [theme, setTheme] = useState<string>("paper");
   const [mdcUnits, setMdcUnits] = useState<Record<string, string>>({});
@@ -275,6 +279,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const s = await api.status();
       setStatus(s);
       setRxActive(!!s.rx_active);
+      setStormActive(!!s.storm_active);
       // count is only present for logged-in users; leave it untouched
       // otherwise so an anon status refresh doesn't zero a live value
       if (typeof s.connections === "number") setConnections(s.connections);
@@ -507,6 +512,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       canSettings: !!status?.can_settings,
       username: status?.username ?? null,
       rxActive,
+      stormActive,
       connections,
       setConnections,
       wsOpen,
@@ -535,6 +541,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setWsOpen,
       setWsConnected,
       setRxActive,
+      setStormActive,
       paused,
       togglePaused,
       soundOn,
@@ -560,6 +567,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [
       status,
       rxActive,
+      stormActive,
       connections,
       wsOpen,
       wsConnected,

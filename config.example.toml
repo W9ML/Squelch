@@ -163,6 +163,22 @@ video_height = 480
 # extra network. Off by default.
 enabled = false
 
+[storm]
+# Stuck-repeater gate. An intermod loop / stuck carrier re-keys the repeater
+# machine-gun style (measured: 74 keyups in 95s, keyed 78% of the time) and
+# whisper would happily chew GPU/CPU on minutes of noise. When the duty cycle
+# AND the keyup rate over a rolling window both exceed the thresholds below,
+# transcription and voice ID pause until the storm clears; audio is still
+# recorded, and skipped overs are marked so an admin can Reprocess one later.
+# Human traffic can't trip both conditions at once: a long ragchew is one
+# keyup (high duty, tiny rate), a busy net is many keyups but mostly idle
+# (high rate, tiny duty). On by default.
+enabled = true
+window_secs = 90.0
+on_duty = 0.45            # enter storm at >=45% keyed ...
+on_rate_per_min = 12.0    # ... AND >=12 keyups/min
+off_duty = 0.20           # exit once duty falls back under 20%
+
 [elevenlabs]
 # Optional ON-DEMAND cloud "second opinion". When enabled, an admin can
 # reprocess ONE transmission through ElevenLabs Scribe from the card's menu

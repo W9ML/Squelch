@@ -237,6 +237,7 @@ export function Feed() {
     reloadMdcUnits,
     setSpeakerLabel,
     setRxActive,
+    setStormActive,
     setConnections,
     setWsConnected,
     openModal,
@@ -508,6 +509,10 @@ export function Feed() {
   const handleEvent = useCallback(
     (msg: WsEvent) => {
       switch (msg.type) {
+        case "storm": {
+          setStormActive(!!(msg as Extract<WsEvent, { type: "storm" }>).active);
+          break;
+        }
         case "rx": {
           const active = !!(msg as Extract<WsEvent, { type: "rx" }>).active;
           setRxActive(active);
@@ -631,7 +636,7 @@ export function Feed() {
           break;
       }
     },
-    [appendTx, updateTx, removeTx, loadFeed, scheduleTopUp, refreshStatus, reloadMdcUnits, setSpeakerLabel, setRxActive, setConnections],
+    [appendTx, updateTx, removeTx, loadFeed, scheduleTopUp, refreshStatus, reloadMdcUnits, setSpeakerLabel, setRxActive, setStormActive, setConnections],
   );
 
   useWebSocket((msg) => {

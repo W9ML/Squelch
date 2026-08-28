@@ -32,6 +32,7 @@ from .mdc_ingest import MDCMatcher
 from .qso import Participant, Qso, QsoConfig, QsoTracker, _key
 from .source_ingest import SourceMatcher
 from .speakerid import SpeakerIdentifier, voice_decision
+from .storm import StormGate
 from .voter import VoterCollector
 from .transcribe import Transcriber
 from .usrp import SAMPLE_RATE, Transmission
@@ -66,6 +67,10 @@ class Pipeline:
         self.transcriber = Transcriber(
             device=cfg.whisper_device, compute_type=cfg.whisper_compute,
             language=cfg.language, download_root=cfg.data_dir / "models")
+        self.storm = StormGate(
+            enabled=cfg.storm_enabled, window_secs=cfg.storm_window_secs,
+            on_duty=cfg.storm_on_duty, off_duty=cfg.storm_off_duty,
+            on_rate_per_min=cfg.storm_on_rate_per_min)
         self.speaker_id = SpeakerIdentifier(
             db, match_threshold=cfg.match_threshold,
             autocluster=cfg.autocluster,
@@ -161,6 +166,10 @@ class Pipeline:
     async def on_transmission(self, tx: Transmission) -> None:
         self.rx_active = False
         await self.broadcaster.send("rx", {"active": False})
+        # stuck-repeater gate: every keyup feeds the cadence window
+        self.storm.note_transmission(tx.started_at, tx.ended_at)
+        if self.storm.update():
+            await self._storm_changed()
         tx_id = await asyncio.to_thread(
             self.db.insert_transmission, tx.started_at, tx.ended_at,
             tx.duration_ms)
@@ -345,16 +354,30 @@ class Pipeline:
                     and active_ms <= self._MDC_ONLY_MAX_ACTIVE_MS)
         dtmf_only = self._is_dtmf_only(active_ms, dtmf)
         speechless = active_ms < 350
-        if mdc_only or speechless or dtmf_only:
+        # stuck-repeater storm: skip the ML stages on live traffic while the
+        # gate is up (re-evaluate first — the window slides, so the first
+        # over after a storm dies must transcribe normally). Admin reprocess
+        # (live=False) always bypasses, so a real over caught in a storm can
+        # be recovered per-card later.
+        storming = False
+        if live:
+            if self.storm.update():
+                await self._storm_changed()
+            storming = self.storm.active
+        if mdc_only or speechless or dtmf_only or storming:
             log.info("tx %d: %s (%d ms active), skipping transcription "
                      "and voice ID", tx_id,
-                     "MDC burst only" if mdc_only
+                     "storm gate up" if storming
+                     else "MDC burst only" if mdc_only
                      else "DTMF tones only" if dtmf_only else "no speech",
                      active_ms)
             # write "" (not NULL): NULL means "transcription never ran",
-            # which the startup sweep treats as stranded work to redo
+            # which the startup sweep treats as stranded work to redo.
+            # Storm skips carry a marker so the card can say why (and an
+            # admin can spot which overs to Reprocess if one was real).
             await asyncio.to_thread(
-                self.db.update_transmission, tx_id, transcript="")
+                self.db.update_transmission, tx_id, transcript="",
+                **({"transcript_model": "storm-skipped"} if storming else {}))
 
         # signal-quality score from the raw audio (independent of speech)
         quality = await asyncio.to_thread(signal_quality.score, audio)
@@ -368,7 +391,8 @@ class Pipeline:
 
         # 4. transcription (with word timestamps for karaoke sync)
         if (self.cfg.transcribe_enabled and self.transcriber.available
-                and not mdc_only and not speechless and not dtmf_only):
+                and not mdc_only and not speechless and not dtmf_only
+                and not storming):
             model = self.whisper_model
             prompt = await asyncio.to_thread(self._whisper_prompt)
             text, words = await asyncio.to_thread(
@@ -404,6 +428,7 @@ class Pipeline:
         evaluation = None
         if (self.cfg.speaker_id_enabled and self.speaker_id.available
                 and not mdc_only and not speechless and not dtmf_only
+                and not storming
                 and duration_ms >= self.cfg.min_embed_ms):
             speech = await asyncio.to_thread(self._speech_only, audio_16k)
             if speech is not None:
@@ -763,6 +788,18 @@ class Pipeline:
         log.info("tx %d: new speaker %s from self-ID", tx_id, cs)
         return True
 
+    async def _storm_changed(self) -> None:
+        duty, _, rate = self.storm.stats()
+        if self.storm.active:
+            log.warning("STORM: repeater keyed %.0f%% of the last %.0fs at "
+                        "%.0f keyups/min — pausing transcription (stuck "
+                        "carrier / intermod?)", duty * 100,
+                        self.storm.window, rate)
+        else:
+            log.info("storm cleared (duty %.0f%%) — transcription resumed",
+                     duty * 100)
+        await self.broadcaster.send("storm", {"active": self.storm.active})
+
     async def _push_update(self, tx_id: int) -> None:
         record = await asyncio.to_thread(self.db.get_transmission, tx_id)
         if record:
@@ -996,6 +1033,11 @@ class Pipeline:
             self._pending_transcribe.extend(stranded)
         while True:
             await asyncio.sleep(5)
+            # the storm window keeps sliding after the carrier drops, so the
+            # gate (and the UI banner) must clear on time alone, not only on
+            # the next keyup — this loop already ticks every 5s, reuse it
+            if self.storm.update():
+                await self._storm_changed()
             if not self._pending_transcribe:
                 continue
             if self.transcriber.loaded_model is None:

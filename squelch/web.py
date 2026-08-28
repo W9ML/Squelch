@@ -794,6 +794,8 @@ def create_app(cfg: Config) -> FastAPI:
             "has_sayagain": cfg.sayagain_enabled,
             # ElevenLabs on-demand "second opinion" reprocess (admin action)
             "has_elevenlabs": cfg.elevenlabs_enabled and elevenlabs_stt.available(),
+            # stuck-repeater gate is up: transcription paused (public, like rx)
+            "storm_active": pipeline.storm.active,
             "footer_text": db.get_setting("footer_text", cfg.footer_text),
             "logo_ts": db.get_setting("logo_ts"),
             # QRZ XML config state, for the settings panel (never the password)

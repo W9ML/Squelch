@@ -133,6 +133,8 @@ export interface Status {
   has_sayagain?: boolean;
   /** ElevenLabs on-demand "second opinion" reprocess is available (admin) */
   has_elevenlabs?: boolean;
+  /** stuck-repeater gate is up — transcription paused until it clears */
+  storm_active?: boolean;
 }
 
 export interface Connection {
@@ -322,6 +324,7 @@ export interface GeoData {
 /** WebSocket events pushed from the server. */
 export type WsEvent =
   | { type: "rx"; active: boolean }
+  | { type: "storm"; active: boolean }
   | { type: "tx_new"; tx: Transmission }
   | { type: "tx_update"; tx: Transmission }
   | { type: "tx_deleted"; id: number }

@@ -213,8 +213,9 @@ function startPermalinkFlash(id: number): void {
           if (done) done.style.animation = "";
         }
       }, 200);
-    } else if (tries > 60) {
-      clearInterval(find); // ~15s ceiling — target isn't going to appear
+    } else if (tries > 160) {
+      clearInterval(find); // ~40s ceiling — a very deep permalink pages back
+                           // through thousands of overs before its card exists
     }
   }, 250);
 }
@@ -441,7 +442,12 @@ export function Feed() {
     }
     const oldestAt = rows.length ? rows[0].started_at : Infinity;
     if (!exhausted && permalinkAt < oldestAt) {
-      loadFeed(true); // older than everything loaded — page further back
+      // older than everything loaded — page further back. Use the biggest page
+      // the API allows (200) rather than the default 50: a deep permalink can
+      // sit thousands of overs back, and 50-at-a-time is ~4x the round-trips
+      // (each now via Cloudflare) plus a re-render of an ever-growing list —
+      // slow enough that the flash poller times out before the card arrives.
+      loadFeed(true, 200);
     } else {
       // older than all retained history (or already gone) — give up, go live
       setPermalinkDone(true);

@@ -243,9 +243,9 @@ _VOTER_PAGE_JS = (
 
 
 def _peer_ip(headers, client) -> str | None:
-    """Real client IP behind the nginx reverse proxy: nginx sets
-    X-Forwarded-For / X-Real-IP (see the site's proxy config), so prefer
-    those over the immediate peer (which is just nginx on localhost)."""
+    """Real client IP behind a local reverse proxy / tunnel: nginx and
+    cloudflared both set X-Forwarded-For (nginx also X-Real-IP), so prefer
+    those over the immediate peer (which is just the proxy on localhost)."""
     xff = headers.get("x-forwarded-for")
     if xff:
         return xff.split(",")[0].strip() or None
@@ -610,7 +610,10 @@ def create_app(cfg: Config) -> FastAPI:
     async def index():
         idx = WEB_OUT_DIR / "index.html"
         if idx.exists():
-            return FileResponse(idx)
+            # never let a browser pin the HTML: it names the content-hashed JS
+            # chunks, so a cached index keeps loading stale app code after a
+            # deploy (the _next/* chunks themselves are immutable + cacheable)
+            return FileResponse(idx, headers={"Cache-Control": "no-cache"})
         raise HTTPException(status_code=404, detail="frontend not built")
 
     # ---- PWA assets (served from the export root with the right MIME/scope) ----
@@ -637,7 +640,11 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/login")
     async def login(body: LoginBody, request: Request):
-        ip = request.client.host if request.client else "?"
+        # throttle on the real client IP: behind a local tunnel/proxy
+        # (cloudflared, nginx) the socket peer is 127.0.0.1 for everyone,
+        # which would merge all visitors into ONE throttle bucket — an
+        # attacker's failures would lock legitimate users out
+        ip = _peer_ip(request.headers, request.client) or "?"
         now = time.time()
         wait = login_throttle.retry_after(ip, now)
         if wait > 0:

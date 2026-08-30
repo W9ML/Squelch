@@ -213,9 +213,9 @@ function startPermalinkFlash(id: number): void {
           if (done) done.style.animation = "";
         }
       }, 200);
-    } else if (tries > 160) {
-      clearInterval(find); // ~40s ceiling — a very deep permalink pages back
-                           // through thousands of overs before its card exists
+    } else if (tries > 48) {
+      clearInterval(find); // ~12s ceiling — the anchored window loads in one
+                           // request; if the card never renders it's gone
     }
   }, 250);
 }
@@ -326,8 +326,11 @@ export function Feed() {
   };
 
   const olderInFlight = useRef(false);
+  // viewing a ?tx= permalink window (a past slice of the feed) — suppress
+  // live-append so a new over can't splice onto this historical view
+  const anchoredRef = useRef(false);
   const loadFeed = useCallback(
-    async (older = false, limit = 50) => {
+    async (older = false, limit = 50, anchorBefore: number | null = null) => {
       // one older-fetch at a time: the debounced top-up and the "Load older"
       // button would otherwise race on the same before_id and prepend
       // duplicate rows / fight over the exhausted flag
@@ -339,6 +342,7 @@ export function Feed() {
         const params: FeedParams = { limit };
         Object.assign(params, filters);
         if (older && oldestId.current) params.before_id = oldestId.current;
+        else if (!older && anchorBefore != null) params.before_id = anchorBefore;
         if (searching && searchText) params.q = searchText;
         let data;
         try {
@@ -373,7 +377,12 @@ export function Feed() {
   );
 
   useEffect(() => {
+    // on a ?tx= permalink, do NOT load the newest feed — the anchored-window
+    // load below is the only initial fetch. Otherwise the two race on setRows
+    // and the newest page wins, burying the target the anchor just placed.
+    if (permalinkId != null && !permalinkDone) return;
     loadFeed(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadFeed]);
 
   // re-fetch when the login state actually flips (not on the first status
@@ -401,9 +410,11 @@ export function Feed() {
   useEffect(() => {
     if (homeNonce === homeSeen.current) return;
     homeSeen.current = homeNonce;
+    anchoredRef.current = false;
     setPermalinkId(null);
     setPermalinkAt(null);
     setPermalinkDone(true);
+    loadFeed(false); // leave the permalink window → back to the live newest feed
     requestAnimationFrame(scrollToBottom);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [homeNonce]);
@@ -436,25 +447,16 @@ export function Feed() {
   // Bounded by `exhausted` so an old/deleted id can't loop forever.
   useEffect(() => {
     if (permalinkId == null || permalinkDone || permalinkAt == null) return;
-    if (rows.some((r) => r.id === permalinkId)) {
-      setPermalinkDone(true); // present — the poller handles scroll + flash
-      return;
-    }
-    const oldestAt = rows.length ? rows[0].started_at : Infinity;
-    if (!exhausted && permalinkAt < oldestAt) {
-      // older than everything loaded — page further back. Use the biggest page
-      // the API allows (200) rather than the default 50: a deep permalink can
-      // sit thousands of overs back, and 50-at-a-time is ~4x the round-trips
-      // (each now via Cloudflare) plus a re-render of an ever-growing list —
-      // slow enough that the flash poller times out before the card arrives.
-      loadFeed(true, 200);
-    } else {
-      // older than all retained history (or already gone) — give up, go live
-      setPermalinkDone(true);
-      scrollToBottom();
-    }
+    // step 1 confirmed the tx exists; replace the feed with a window ANCHORED
+    // at the target (~50 cards, one request) instead of paging thousands of
+    // overs back from the newest and rendering them all. The target is loaded
+    // roughly centered (before_id = id + 26 → ~25 newer + ~24 older around it);
+    // the poller centers + flashes it the moment its card renders. anchoredRef
+    // stops a live over from splicing onto this past view.
+    anchoredRef.current = true;
+    loadFeed(false, 50, permalinkId + 26).then(() => setPermalinkDone(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, permalinkId, permalinkAt, permalinkDone, exhausted, loadFeed]);
+  }, [permalinkId, permalinkAt, permalinkDone, loadFeed]);
 
   const exhaustedRef = useRef(exhausted);
   exhaustedRef.current = exhausted;
@@ -578,7 +580,7 @@ export function Feed() {
           if (captionTimer.current) clearTimeout(captionTimer.current);
           setCaption(null); // the real card now represents this over
           if (soundRef.current) playNewRecording();
-          if (!isFilteredRef.current) appendTx(rec);
+          if (!isFilteredRef.current && !anchoredRef.current) appendTx(rec);
           break;
         }
         case "tx_update": {
@@ -600,6 +602,7 @@ export function Feed() {
             updateTx(tx); // in the feed — patch it in place
           } else if (
             !isFilteredRef.current &&
+            !anchoredRef.current &&
             tx.id > (cur.length ? cur[cur.length - 1].id : 0)
           ) {
             // genuinely newer than everything loaded (a tx_new we missed) —

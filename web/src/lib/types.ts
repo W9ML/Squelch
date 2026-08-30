@@ -59,6 +59,8 @@ export interface Transmission {
   ended_at: number | null;
   duration_ms: number;
   has_audio: boolean;
+  /** a voiceprint exists — enables "find similar voice" even for unknown voices */
+  has_embedding?: boolean;
   transcript: string | null;
   transcript_model: string | null;
   speaker_id: number | null;

@@ -284,6 +284,7 @@ class Database:
                   " t.dtmf_json,"
                   " t.origin, t.origin_hub, t.voter_json, t.words, t.quality,"
                   " t.status, t.qso_id,"
+                  " (t.embedding IS NOT NULL) AS has_embedding,"
                   " s.label AS speaker_label, s.is_named AS speaker_named,"
                   " sg.label AS suggest_label"
                   " FROM transmissions t LEFT JOIN speakers s ON s.id=t.speaker_id"
@@ -307,6 +308,9 @@ class Database:
     def _tx_row_to_dict(row: sqlite3.Row) -> dict:
         d = dict(row)
         d["has_audio"] = bool(d.pop("audio_path"))
+        # whether a voiceprint exists — drives the "find similar voice" button
+        # for ANY over that has one, not just ones with a named speaker
+        d["has_embedding"] = bool(d.pop("has_embedding", 0))
         d["mdc"] = Database._normalize_mdc(json.loads(d.pop("mdc_json") or "[]"))
         d["peaks"] = json.loads(d["peaks"]) if d["peaks"] else None
         dj = d.pop("dtmf_json")

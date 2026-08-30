@@ -507,10 +507,14 @@ export function TransmissionCard({
             <span title={new Date(tx.started_at * 1000).toLocaleString()}>
               {fmtTime(tx.started_at)}
             </span>
-            {tx.speaker_id != null && (
+            {tx.has_embedding && (
               <button
                 className="card-action"
-                title="Find similar-sounding transmissions"
+                title={
+                  tx.speaker_id != null
+                    ? "Find transmissions with a similar voice"
+                    : "Unknown voice — find other overs that sound like this one"
+                }
                 onClick={() => openModal({ kind: "similar", tx })}
               >
                 <FontAwesomeIcon icon={ICONS.similar} />

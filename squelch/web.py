@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -20,7 +21,8 @@ from fastapi import (FastAPI, HTTPException, Request, UploadFile, WebSocket,
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                 Response)
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from . import (__version__, elevenlabs_stt, geo, qrz, tabexport, usrp,
                watchdog, webpush)
@@ -413,27 +415,30 @@ class MDCUnitBody(BaseModel):
 CASE_STATUSES = ("open", "active", "suspended", "closed", "referred")
 
 
+# length caps keep a stray/abusive client from storing unbounded text that the
+# report/zip then has to render; empty-title / empty-note are still rejected in
+# the endpoints (400), so no min_length here.
 class CaseBody(BaseModel):
-    title: str
-    subject: str = ""
-    summary: str = ""
+    title: str = Field(max_length=300)
+    subject: str = Field("", max_length=300)
+    summary: str = Field("", max_length=20000)
 
 
 class CaseUpdateBody(BaseModel):
-    title: str | None = None
+    title: str | None = Field(None, max_length=300)
     status: str | None = None
-    subject: str | None = None
-    summary: str | None = None
+    subject: str | None = Field(None, max_length=300)
+    summary: str | None = Field(None, max_length=20000)
 
 
 class CaseItemBody(BaseModel):
     tx_id: int
-    label: str = ""
-    note: str = ""
+    label: str = Field("", max_length=300)
+    note: str = Field("", max_length=20000)
 
 
 class CaseNoteBody(BaseModel):
-    text: str
+    text: str = Field(max_length=20000)
 
 
 def _render_case_report(case: dict, site_name: str) -> str:
@@ -1071,6 +1076,14 @@ def create_app(cfg: Config) -> FastAPI:
                 r.pop("voter", None)
         return {"transmissions": rows}
 
+    @app.get("/api/transmissions/{tx_id}/cases")
+    async def tx_cases(tx_id: int, request: Request):
+        # which cases a recording is already filed under -- settings-gated, so
+        # the existence of an investigation never leaks to public viewers.
+        require_settings(request)
+        cases = await asyncio.to_thread(db.cases_for_tx, tx_id)
+        return {"cases": cases}
+
     @app.get("/api/transmissions/{tx_id}/geo")
     async def tx_geo(tx_id: int, request: Request):
         require_admin(request)          # geolocation is admin-only
@@ -1565,12 +1578,12 @@ def create_app(cfg: Config) -> FastAPI:
             raise HTTPException(status_code=404, detail="no such case")
         site = db.get_setting("site_name", cfg.site_name) or "Squelch"
 
-        def build() -> bytes:
-            # the report + every attached recording still on disk, one zip
-            import io
+        def build(path: str) -> None:
+            # the report + every attached recording still on disk, one zip.
+            # Built to a temp file and streamed (not held whole in memory) so a
+            # heavily-evidenced case can't spike RAM.
             import zipfile
-            buf = io.BytesIO()
-            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
                 z.writestr(f"case_{case['number']}_report.html",
                            _render_case_report(case, site))
                 for it in case["items"]:
@@ -1581,13 +1594,18 @@ def create_app(cfg: Config) -> FastAPI:
                         stamp = time.strftime("%Y%m%d-%H%M%S",
                                               time.localtime(it["started_at"]))
                         z.write(p, f"recordings/{stamp}_tx{it['tx_id']}.wav")
-            return buf.getvalue()
 
-        data = await asyncio.to_thread(build)
-        return Response(
-            content=data, media_type="application/zip",
-            headers={"Content-Disposition":
-                     f'attachment; filename="case_{case["number"]}.zip"'})
+        fd, tmp = tempfile.mkstemp(suffix=".zip", prefix="case_export_")
+        os.close(fd)
+        try:
+            await asyncio.to_thread(build, tmp)
+        except Exception:
+            os.unlink(tmp)
+            raise
+        return FileResponse(
+            tmp, media_type="application/zip",
+            filename=f"case_{case['number']}.zip",
+            background=BackgroundTask(os.unlink, tmp))   # remove after send
 
     # ---- web push (phone/desktop alerts when the app is closed) ----
 

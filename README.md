@@ -44,6 +44,13 @@ it can hear the repeater but can never key it up.
   when-active heatmap, session lengths, peak concurrent viewers, client breakdown.
 - **Watchlist + push** — browser or webhook alerts when a callsign, unit ID,
   emergency, or speaker you care about hits the air.
+- **Cases** *(admin)* — an investigative case file for documenting malicious
+  interference: numbered cases, a suspected operator, evidence recordings pinned
+  from any transmission's ⋯ menu (and **exempt from audio auto-pruning** while
+  filed), an append-only activity log, and a printable or ZIP export (report +
+  audio).
+- **Interference triage** — a non-speech filter surfaces overs that carried
+  audio but no recognized speech (carriers, tones, jamming) for quick review.
 - **Search & stats** — faceted filtering, per-speaker pages, and an activity
   dashboard (busiest hours, top talkers, per-node breakdown).
 - **Fuzzy TX geolocation** *(optional)* — on a voted/simulcast network, per-site
@@ -189,6 +196,22 @@ transcription and voice clustering work.
   > occasional one-off downloads, but it isn't built for many
   > simultaneous exports on a small VM. It's admin-only, so bear it in
   > mind when handing out admin logins.
+
+  A recording that's filed as case evidence can't be deleted or purged
+  (the app returns a 409) — unfile it from the case first. This is what
+  keeps a chain of custody intact.
+- **Filters** — (any viewer) the funnel icon filters the feed by origin,
+  speaker, MDC unit, date, and — for interference hunting — **audio with no
+  recognized speech** (carriers, tones, jamming).
+- **Cases** — (admin) the **Cases** button in the header opens investigative
+  case management for documenting deliberate interference. Open a numbered case
+  (e.g. `2026-001`), set a suspected operator and a summary, and file recordings
+  as **evidence** straight from a transmission's ⋯ menu. Filed recordings are
+  **exempt from audio retention** — they aren't pruned by age or the disk-space
+  guard, and can't be purged, while a case references them. Each case keeps an
+  **append-only activity log** (your notes plus system audit events) and exports
+  as a **printable report** or a **ZIP** bundling the report with every attached
+  recording. Admin/super only; public viewers never see Cases.
 - **Settings panel** — (admin) the gear icon opens:
   - **Theme** — Night Mode (default) or Day Mode. This sets the site
     default; each viewer can also pick their own from the header.

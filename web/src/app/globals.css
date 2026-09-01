@@ -2040,6 +2040,15 @@ span.cs-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px
   background: var(--accent-soft);
 }
 .case-err { margin: 0.5rem 0 0.2rem; }
+.atc-filed {
+  margin: 0 0 0.6rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
 .case-tnum {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
@@ -2237,6 +2246,7 @@ span.cs-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px
 }
 .case-detail-foot {
   display: flex;
+  flex-wrap: wrap;                 /* footer buttons stack instead of overflowing on a phone */
   justify-content: flex-end;
   gap: 0.6rem;
   margin-top: 1rem;

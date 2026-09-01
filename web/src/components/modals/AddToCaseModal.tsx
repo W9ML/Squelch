@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type { CaseSummary, Transmission } from "@/lib/types";
 import { useApp } from "@/state/app-context";
@@ -15,16 +15,21 @@ export function AddToCaseModal({ tx }: { tx: Transmission }) {
   const [newTitle, setNewTitle] = useState("");
   const [label, setLabel] = useState("");
   const [note, setNote] = useState("");
+  const [filed, setFiled] = useState<{ number: string }[]>([]);   // cases it's already in
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState("");
+  // a case created in THIS session — reused on retry so a failed file-step
+  // can't leave a trail of empty duplicate cases
+  const createdRef = useRef<{ id: number; number: string } | null>(null);
 
   useEffect(() => {
     api.cases().then((d) => {
       setCases(d.cases);
       setSel(d.cases.length ? d.cases[0].id : "new");
-    }).catch((e) => setErr((e as Error).message));
-  }, []);
+    }).catch((e) => { setCases([]); setErr((e as Error).message); });   // still allow "new"
+    api.txCases(tx.id).then((d) => setFiled(d.cases)).catch(() => {});
+  }, [tx.id]);
 
   const submit = async () => {
     setErr(""); setBusy(true);
@@ -33,16 +38,21 @@ export function AddToCaseModal({ tx }: { tx: Transmission }) {
       let number = "";
       if (sel === "new") {
         if (!newTitle.trim()) { setErr("name the new case"); setBusy(false); return; }
-        const { case: c } = await api.createCase({ title: newTitle.trim() });
-        caseId = c.id; number = c.number;
+        if (createdRef.current) {                       // reuse, don't re-create
+          ({ id: caseId, number } = createdRef.current);
+        } else {
+          const { case: c } = await api.createCase({ title: newTitle.trim() });
+          createdRef.current = { id: c.id, number: c.number };
+          caseId = c.id; number = c.number;
+        }
       } else {
         caseId = sel;
         number = cases?.find((c) => c.id === sel)?.number || "";
       }
       const r = await api.addCaseItem(caseId, tx.id, label.trim(), note.trim());
       setDone(r.already ? `Already filed under case ${number}.` : `Added to case ${number}.`);
-      setBusy(false);
-    } catch (e) { setErr((e as Error).message); setBusy(false); }
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -55,7 +65,7 @@ export function AddToCaseModal({ tx }: { tx: Transmission }) {
         ) : (
           <>
             <button className="text-btn" onClick={closeModal}>Cancel</button>
-            <button className="text-btn primary" disabled={busy || !cases} onClick={submit}>
+            <button className="text-btn primary" disabled={busy || cases === null} onClick={submit}>
               {busy ? "Filing…" : "Add to case"}
             </button>
           </>
@@ -68,12 +78,18 @@ export function AddToCaseModal({ tx }: { tx: Transmission }) {
         {tx.origin ? ` · from ${tx.origin}` : ""}
       </div>
 
+      {filed.length ? (
+        <div className="atc-filed">
+          Already filed in: {filed.map((c) => c.number).join(", ")}
+        </div>
+      ) : null}
+
       {done ? (
         <div className="atc-done">{done}</div>
       ) : (
         <>
-          <label>Case</label>
-          <select className="native-select atc-sel" value={String(sel)}
+          <label htmlFor="atc-case">Case</label>
+          <select id="atc-case" className="native-select atc-sel" value={String(sel)}
             onChange={(e) => setSel(e.target.value === "new" ? "new" : Number(e.target.value))}>
             {(cases || []).map((c) => (
               <option key={c.id} value={c.id}>
@@ -83,16 +99,17 @@ export function AddToCaseModal({ tx }: { tx: Transmission }) {
             <option value="new">＋ New case…</option>
           </select>
           {sel === "new" ? (
-            <input autoFocus placeholder="New case title" value={newTitle}
+            <input id="atc-newtitle" autoFocus aria-label="New case title"
+              placeholder="New case title" value={newTitle}
               onChange={(e) => setNewTitle(e.target.value)} />
           ) : null}
-          <label>Label <span className="hint">(optional)</span></label>
-          <input value={label} placeholder="e.g. explicit audio"
+          <label htmlFor="atc-label">Label <span className="hint">(optional)</span></label>
+          <input id="atc-label" value={label} placeholder="e.g. explicit audio"
             onChange={(e) => setLabel(e.target.value)} />
-          <label>Note <span className="hint">(optional)</span></label>
-          <input value={note} placeholder="why this matters"
+          <label htmlFor="atc-note">Note <span className="hint">(optional)</span></label>
+          <input id="atc-note" value={note} placeholder="why this matters"
             onChange={(e) => setNote(e.target.value)} />
-          <div className="err">{err}</div>
+          {err ? <div className="err" role="alert">{err}</div> : null}
         </>
       )}
     </SqModal>

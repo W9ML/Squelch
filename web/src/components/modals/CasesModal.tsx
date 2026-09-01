@@ -52,15 +52,15 @@ function NewCase({ onCreate, onCancel }: {
 
   return (
     <div className="case-form">
-      <label>Title</label>
-      <input autoFocus value={title}
+      <label htmlFor="nc-title">Title</label>
+      <input id="nc-title" autoFocus value={title}
         placeholder="e.g. Malicious carrier during Tuesday net"
         onChange={(e) => setTitle(e.target.value)} />
-      <label>Suspected operator <span className="hint">(callsign or description, optional)</span></label>
-      <input value={subject} onChange={(e) => setSubject(e.target.value)} />
-      <label>Summary</label>
-      <textarea rows={3} value={summary} onChange={(e) => setSummary(e.target.value)} />
-      <div className="err">{err}</div>
+      <label htmlFor="nc-subject">Suspected operator <span className="hint">(callsign or description, optional)</span></label>
+      <input id="nc-subject" value={subject} onChange={(e) => setSubject(e.target.value)} />
+      <label htmlFor="nc-summary">Summary</label>
+      <textarea id="nc-summary" rows={3} value={summary} onChange={(e) => setSummary(e.target.value)} />
+      {err ? <div className="err" role="alert">{err}</div> : null}
       <div className="modal-actions">
         <button className="text-btn" onClick={onCancel}>Cancel</button>
         <button className="text-btn primary" disabled={busy} onClick={submit}>
@@ -89,6 +89,7 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
   const [dlgBusy, setDlgBusy] = useState(false);
   const [err, setErr] = useState("");        // inline detail error (themed, not alert)
   const [dlgErr, setDlgErr] = useState("");  // inline error inside the open dialog
+  const [noteBusy, setNoteBusy] = useState(false);
 
   const load = useCallback(() => {
     api.case(caseId).then(setC).catch((e) => setMsg((e as Error).message));
@@ -132,10 +133,11 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
     catch (e) { setErr((e as Error).message); }
   };
   const addNote = async () => {
-    const t = note.trim(); if (!t) return;
-    setErr("");
+    const t = note.trim(); if (!t || noteBusy) return;   // guard double-submit
+    setErr(""); setNoteBusy(true);
     try { const { case: nc } = await api.addCaseNote(caseId, t); setC(nc); setNote(""); }
     catch (e) { setErr((e as Error).message); }   // keep the typed note on failure
+    finally { setNoteBusy(false); }
   };
   const confirmDelete = async () => {
     setDlgBusy(true); setDlgErr("");
@@ -156,22 +158,22 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
 
       <div className="case-head">
         <span className="case-num">Case {c.number}</span>
-        <input className="case-title-edit" defaultValue={c.title}
+        <input className="case-title-edit" aria-label="Case title" defaultValue={c.title}
           onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== c.title) patch({ title: v }); }} />
       </div>
 
       <div className="case-meta">
-        <label>Status</label>
-        <select className="native-select" value={c.status} onChange={(e) => changeStatus(e.target.value)}>
+        <label htmlFor="cd-status">Status</label>
+        <select id="cd-status" className="native-select" value={c.status} onChange={(e) => changeStatus(e.target.value)}>
           {statuses.map((s) => <option key={s} value={s}>{STATUS_LABEL[s] || s}</option>)}
         </select>
-        <label>Suspected operator</label>
-        <input defaultValue={c.subject || ""} placeholder="callsign or description"
+        <label htmlFor="cd-subject">Suspected operator</label>
+        <input id="cd-subject" defaultValue={c.subject || ""} placeholder="callsign or description"
           onBlur={(e) => { if (e.target.value !== (c.subject || "")) patch({ subject: e.target.value }); }} />
       </div>
 
-      <label className="case-lbl">Summary</label>
-      <textarea className="case-summary" rows={2} defaultValue={c.summary || ""}
+      <label className="case-lbl" htmlFor="cd-summary">Summary</label>
+      <textarea id="cd-summary" className="case-summary" rows={2} defaultValue={c.summary || ""}
         placeholder="what happened…"
         onBlur={(e) => { if (e.target.value !== (c.summary || "")) patch({ summary: e.target.value }); }} />
 
@@ -215,10 +217,13 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
         ))}
       </div>
       <div className="case-addnote">
-        <input value={note} placeholder="Add a note to the log…"
+        <input value={note} aria-label="Add a note to the activity log"
+          placeholder="Add a note to the log…" disabled={noteBusy}
           onChange={(e) => setNote(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") addNote(); }} />
-        <button className="text-btn" onClick={addNote}>Add note</button>
+        <button className="text-btn" disabled={noteBusy} onClick={addNote}>
+          {noteBusy ? "Adding…" : "Add note"}
+        </button>
       </div>
 
       <div className="case-detail-foot">

@@ -215,6 +215,10 @@ export const api = {
       `/api/cases/${id}/notes`, { text }),
   caseExportUrl: (id: number) => `${BASE}/api/cases/${id}/export`,
   caseExportZipUrl: (id: number) => `${BASE}/api/cases/${id}/export.zip`,
+  /** which cases a recording is already filed under (settings-gated) */
+  txCases: (tx_id: number) =>
+    request<{ cases: { id: number; number: string; title: string }[] }>(
+      `/api/transmissions/${tx_id}/cases`),
 
   // ---- web push ----
   pushVapid: () => request<{ key: string; enabled: boolean }>("/api/push/vapid"),

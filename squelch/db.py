@@ -1531,10 +1531,11 @@ class Database:
         now = time.time()
         year = time.strftime("%Y", time.localtime(now))
         with self._lock, self._conn:
+            # numeric max, not lexical -- "2026-1000" must beat "2026-999"
             row = self._conn.execute(
-                "SELECT number FROM cases WHERE number LIKE ?"
-                " ORDER BY number DESC LIMIT 1", (f"{year}-%",)).fetchone()
-            seq = (int(row["number"].split("-")[1]) + 1) if row else 1
+                "SELECT MAX(CAST(substr(number, 6) AS INTEGER)) AS mx"
+                " FROM cases WHERE number LIKE ?", (f"{year}-%",)).fetchone()
+            seq = (row["mx"] or 0) + 1
             number = f"{year}-{seq:03d}"
             cur = self._conn.execute(
                 "INSERT INTO cases (number,title,status,subject,summary,"

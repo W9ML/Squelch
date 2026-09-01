@@ -14,6 +14,8 @@ import { CallsignModal } from "./modals/CallsignModal";
 import { SettingsModal } from "./modals/SettingsModal";
 import { StatsModal } from "./modals/StatsModal";
 import { NetworkModal } from "./modals/NetworkModal";
+import { CasesModal } from "./modals/CasesModal";
+import { AddToCaseModal } from "./modals/AddToCaseModal";
 import { LogbookModal } from "./modals/LogbookModal";
 import { ConnLogModal } from "./modals/ConnLogModal";
 import { TimeMachine } from "./TimeMachine";
@@ -39,6 +41,10 @@ export function ModalHost() {
       return <StatsModal />;
     case "network":
       return <NetworkModal />;
+    case "cases":
+      return <CasesModal />;
+    case "addToCase":
+      return <AddToCaseModal tx={modal.tx} />;
     case "logbook":
       return <LogbookModal />;
     case "connlog":

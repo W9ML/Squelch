@@ -344,3 +344,55 @@ export type WsEvent =
   | { type: "presence"; count: number }
   | { type: "bscope"; c: string; seq: number }
   | { type: string; [k: string]: unknown };
+
+/** A case = an investigative record (interference / incident documentation). */
+export interface CaseSummary {
+  id: number;
+  number: string;
+  title: string;
+  status: string;
+  subject: string | null;
+  summary: string | null;
+  opened_at: number;
+  closed_at: number | null;
+  created_by: string | null;
+  updated_at: number;
+  item_count: number;
+  first_evidence: number | null;
+  last_evidence: number | null;
+}
+
+/** One recording (transmission) filed as evidence under a case. */
+export interface CaseItem {
+  id: number;
+  tx_id: number;
+  label: string | null;
+  note: string | null;
+  added_at: number;
+  added_by: string | null;
+  started_at: number;
+  duration_ms: number | null;
+  origin: string | null;
+  origin_hub: string | null;
+  transcript: string | null;
+  has_audio: number | boolean;
+}
+
+/** An activity-log entry: an operator note or a system audit event. */
+export interface CaseNote {
+  id: number;
+  ts: number;
+  author: string | null;
+  kind: string; // 'note' | 'system'
+  text: string;
+}
+
+export interface CaseDetail extends CaseSummary {
+  items: CaseItem[];
+  notes: CaseNote[];
+}
+
+export interface CasesResponse {
+  cases: CaseSummary[];
+  statuses: string[];
+}

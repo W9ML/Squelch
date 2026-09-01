@@ -227,6 +227,16 @@ export function Header() {
         >
           <FontAwesomeIcon icon={ICONS.stats} />
         </button>
+        {canSettings && (
+          <button
+            className="icon-btn"
+            title="Cases — interference documentation"
+            aria-label="Cases"
+            onClick={() => openModal({ kind: "cases" })}
+          >
+            <FontAwesomeIcon icon={ICONS.cases} />
+          </button>
+        )}
         <button
           className="icon-btn"
           title="Callsign logbook"

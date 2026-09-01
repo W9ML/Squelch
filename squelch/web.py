@@ -409,6 +409,98 @@ class MDCUnitBody(BaseModel):
     speaker_id: int
 
 
+# ---- cases (investigative case management) ----
+CASE_STATUSES = ("open", "active", "suspended", "closed", "referred")
+
+
+class CaseBody(BaseModel):
+    title: str
+    subject: str = ""
+    summary: str = ""
+
+
+class CaseUpdateBody(BaseModel):
+    title: str | None = None
+    status: str | None = None
+    subject: str | None = None
+    summary: str | None = None
+
+
+class CaseItemBody(BaseModel):
+    tx_id: int
+    label: str = ""
+    note: str = ""
+
+
+class CaseNoteBody(BaseModel):
+    text: str
+
+
+def _render_case_report(case: dict, site_name: str) -> str:
+    """Self-contained printable HTML documentation packet for one case."""
+    import html as _html
+
+    def esc(x) -> str:
+        return _html.escape(str(x if x is not None else ""))
+
+    def ts(t) -> str:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) if t else "—"
+
+    css = (
+        "body{font:14px/1.5 system-ui,'Segoe UI',Arial,sans-serif;color:#111;"
+        "max-width:900px;margin:2rem auto;padding:0 1rem}"
+        "h1{margin:0 0 .2rem}h3{margin:1.4rem 0 .4rem}"
+        ".sub{color:#555;margin-bottom:1.4rem}"
+        "table{border-collapse:collapse;width:100%;margin:.4rem 0 1rem;font-size:13px}"
+        "th,td{border:1px solid #ccc;padding:.35rem .5rem;text-align:left;vertical-align:top}"
+        "th{background:#f2f2f2}"
+        "dl{display:grid;grid-template-columns:140px 1fr;gap:.2rem .75rem}"
+        "dt{color:#555;font-weight:600}dd{margin:0}"
+        ".log{border-left:3px solid #ccc;padding:.2rem .75rem;margin:.35rem 0}"
+        ".lt{color:#777;font-variant-numeric:tabular-nums}.la{font-weight:600}"
+        "@media print{body{margin:0}}"
+    )
+    rows = ""
+    for i, it in enumerate(case.get("items", []), 1):
+        secs = round((it.get("duration_ms") or 0) / 1000.0, 1)
+        purged = "" if it.get("has_audio") else " (audio purged)"
+        rows += (f"<tr><td>{i}</td><td>{ts(it['started_at'])}</td><td>{secs}s</td>"
+                 f"<td>{esc(it.get('origin'))}</td><td>{esc(it.get('origin_hub'))}</td>"
+                 f"<td>tx {it['tx_id']}{purged}</td><td>{esc(it.get('label'))}</td>"
+                 f"<td>{esc(it.get('note'))}</td></tr>")
+    if not rows:
+        rows = "<tr><td colspan='8'>No recordings attached.</td></tr>"
+    log = ""
+    for n in case.get("notes", []):
+        sysflag = " · system" if n.get("kind") == "system" else ""
+        log += (f"<div class='log'><span class='lt'>{ts(n['ts'])}</span> "
+                f"<span class='la'>{esc(n.get('author') or 'system')}</span>{sysflag}"
+                f"<br>{esc(n['text'])}</div>")
+    if not log:
+        log = "<p>—</p>"
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        f"<title>Case {esc(case['number'])} — {esc(case['title'])}</title>"
+        f"<style>{css}</style></head><body>"
+        f"<h1>Case {esc(case['number'])} — {esc(case['title'])}</h1>"
+        f"<div class='sub'>{esc(site_name)} · interference documentation · "
+        f"generated {ts(time.time())}</div>"
+        "<dl>"
+        f"<dt>Status</dt><dd>{esc(case['status'])}</dd>"
+        f"<dt>Subject</dt><dd>{esc(case.get('subject')) or '—'}</dd>"
+        f"<dt>Opened</dt><dd>{ts(case['opened_at'])}</dd>"
+        f"<dt>Evidence</dt><dd>{len(case.get('items', []))} recording(s)</dd>"
+        "</dl>"
+        f"<h3>Summary</h3><p>{esc(case.get('summary')) or '—'}</p>"
+        "<h3>Evidence — recordings</h3><table><thead><tr>"
+        "<th>#</th><th>Timestamp (local)</th><th>Length</th><th>Origin</th>"
+        "<th>Hub</th><th>Recording</th><th>Label</th><th>Note</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+        f"<h3>Activity log</h3>{log}"
+        "</body></html>"
+    )
+
+
 class _LoginThrottle:
     """Per-client-IP login rate limiting (in-memory, single-process).
 
@@ -828,11 +920,12 @@ def create_app(cfg: Config) -> FastAPI:
                             since: float | None = None,
                             until: float | None = None,
                             has_mdc: bool = False,
-                            unnamed: bool = False):
+                            unnamed: bool = False,
+                            no_speech: bool = False):
         limit = max(1, min(limit, 200))
         rows = await asyncio.to_thread(
             db.list_transmissions, limit, before_id, q, speaker_id,
-            origin, mdc_unit, since, until, has_mdc, unnamed)
+            origin, mdc_unit, since, until, has_mdc, unnamed, no_speech)
         if current_user(request) is None:
             # voter RSSI is login-gated, mirroring the geolocation it feeds
             for r in rows:
@@ -1368,6 +1461,94 @@ def create_app(cfg: Config) -> FastAPI:
                 db.set_watch_enabled, watch_id, body.enabled, user):
             raise HTTPException(status_code=404, detail="no such watch")
         return {"ok": True}
+
+    # ---- cases (investigative records; super/admin only) ----
+
+    @app.get("/api/cases")
+    async def list_cases_ep(request: Request, status: str | None = None):
+        require_settings(request)
+        return {"cases": await asyncio.to_thread(db.list_cases, status),
+                "statuses": list(CASE_STATUSES)}
+
+    @app.post("/api/cases")
+    async def create_case_ep(body: CaseBody, request: Request):
+        user = require_settings(request)
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title required")
+        case = await asyncio.to_thread(
+            db.create_case, title, user, body.subject.strip(), body.summary.strip())
+        return {"ok": True, "case": case}
+
+    @app.get("/api/cases/{case_id}")
+    async def get_case_ep(case_id: int, request: Request):
+        require_settings(request)
+        case = await asyncio.to_thread(db.get_case, case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="no such case")
+        return case
+
+    @app.patch("/api/cases/{case_id}")
+    async def update_case_ep(case_id: int, body: CaseUpdateBody, request: Request):
+        user = require_settings(request)
+        fields: dict = {}
+        for k in ("title", "status", "subject", "summary"):
+            v = getattr(body, k)
+            if v is not None:
+                fields[k] = v.strip() if isinstance(v, str) else v
+        if not fields:
+            raise HTTPException(status_code=400, detail="nothing to update")
+        if fields.get("status") is not None and fields["status"] not in CASE_STATUSES:
+            raise HTTPException(status_code=400, detail="invalid status")
+        if "title" in fields and not fields["title"]:
+            raise HTTPException(status_code=400, detail="title cannot be empty")
+        if not await asyncio.to_thread(db.update_case, case_id, fields, user):
+            raise HTTPException(status_code=404, detail="no such case")
+        return {"ok": True, "case": await asyncio.to_thread(db.get_case, case_id)}
+
+    @app.delete("/api/cases/{case_id}")
+    async def delete_case_ep(case_id: int, request: Request):
+        require_super(request)             # deleting a case file is super-admin only
+        if not await asyncio.to_thread(db.delete_case, case_id):
+            raise HTTPException(status_code=404, detail="no such case")
+        return {"ok": True}
+
+    @app.post("/api/cases/{case_id}/items")
+    async def add_case_item_ep(case_id: int, body: CaseItemBody, request: Request):
+        user = require_settings(request)
+        r = await asyncio.to_thread(db.add_case_item, case_id, body.tx_id,
+                                    body.label.strip(), body.note.strip(), user)
+        if r is None:
+            raise HTTPException(status_code=404,
+                                detail="no such case or transmission")
+        return {"ok": True, "already": r == 0,
+                "case": await asyncio.to_thread(db.get_case, case_id)}
+
+    @app.delete("/api/cases/{case_id}/items/{item_id}")
+    async def remove_case_item_ep(case_id: int, item_id: int, request: Request):
+        user = require_settings(request)
+        if not await asyncio.to_thread(db.remove_case_item, case_id, item_id, user):
+            raise HTTPException(status_code=404, detail="no such evidence item")
+        return {"ok": True, "case": await asyncio.to_thread(db.get_case, case_id)}
+
+    @app.post("/api/cases/{case_id}/notes")
+    async def add_case_note_ep(case_id: int, body: CaseNoteBody, request: Request):
+        user = require_settings(request)
+        text = body.text.strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="note text required")
+        if await asyncio.to_thread(db.add_case_note, case_id, text, user) is None:
+            raise HTTPException(status_code=404, detail="no such case")
+        return {"ok": True, "case": await asyncio.to_thread(db.get_case, case_id)}
+
+    @app.get("/api/cases/{case_id}/export")
+    async def export_case_ep(case_id: int, request: Request):
+        require_settings(request)
+        case = await asyncio.to_thread(db.get_case, case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="no such case")
+        site = db.get_setting("site_name", cfg.site_name) or "Squelch"
+        return HTMLResponse(_render_case_report(case, site))
 
     # ---- web push (phone/desktop alerts when the app is closed) ----
 

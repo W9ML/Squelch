@@ -1,0 +1,277 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { api } from "@/lib/api";
+import type { CaseDetail, CaseSummary, CasesResponse } from "@/lib/types";
+import { useApp } from "@/state/app-context";
+import { ICONS } from "../icons";
+import { SqModal } from "./SqModal";
+
+type CasePatch = Partial<{
+  title: string; status: string; priority: string;
+  category: string; subject: string; summary: string;
+}>;
+
+const STATUS_LABEL: Record<string, string> = {
+  open: "Open", active: "Active", suspended: "Suspended",
+  closed: "Closed", referred: "Referred",
+};
+
+function fmtWhen(epoch: number): string {
+  return new Date(epoch * 1000).toLocaleString([], {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "numeric", minute: "2-digit",
+  });
+}
+function fmtSecs(ms: number | null): string {
+  const s = Math.round((ms || 0) / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+// ---------- new-case form ----------
+function NewCase({ onCreate, onCancel }: {
+  onCreate: (c: CaseDetail) => void;
+  onCancel: () => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [subject, setSubject] = useState("");
+  const [summary, setSummary] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!title.trim()) return setErr("give the case a title");
+    setBusy(true); setErr("");
+    try {
+      const { case: c } = await api.createCase({
+        title: title.trim(), subject: subject.trim(), summary: summary.trim(),
+      });
+      onCreate(c);
+    } catch (e) { setErr((e as Error).message); setBusy(false); }
+  };
+
+  return (
+    <div className="case-form">
+      <label>Title</label>
+      <input autoFocus value={title}
+        placeholder="e.g. Malicious carrier during Tuesday net"
+        onChange={(e) => setTitle(e.target.value)} />
+      <label>Suspected party <span className="hint">(callsign or description, optional)</span></label>
+      <input value={subject} onChange={(e) => setSubject(e.target.value)} />
+      <label>Summary</label>
+      <textarea rows={3} value={summary} onChange={(e) => setSummary(e.target.value)} />
+      <div className="err">{err}</div>
+      <div className="modal-actions">
+        <button className="text-btn" onClick={onCancel}>Cancel</button>
+        <button className="text-btn primary" disabled={busy} onClick={submit}>
+          {busy ? "Opening…" : "Open case"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------- case detail ----------
+function Detail({ caseId, statuses, isSuper, onBack, onChanged }: {
+  caseId: number; statuses: string[]; isSuper: boolean;
+  onBack: () => void; onChanged: () => void;
+}) {
+  const [c, setC] = useState<CaseDetail | null>(null);
+  const [note, setNote] = useState("");
+  const [msg, setMsg] = useState("loading…");
+
+  const load = useCallback(() => {
+    api.case(caseId).then(setC).catch((e) => setMsg((e as Error).message));
+  }, [caseId]);
+  useEffect(load, [load]);
+
+  const patch = async (body: CasePatch) => {
+    try { const { case: nc } = await api.updateCase(caseId, body); setC(nc); onChanged(); }
+    catch (e) { alert((e as Error).message); }
+  };
+  const removeItem = async (itemId: number) => {
+    try { const { case: nc } = await api.removeCaseItem(caseId, itemId); setC(nc); onChanged(); }
+    catch (e) { alert((e as Error).message); }
+  };
+  const addNote = async () => {
+    const t = note.trim(); if (!t) return;
+    try { const { case: nc } = await api.addCaseNote(caseId, t); setC(nc); setNote(""); onChanged(); }
+    catch (e) { alert((e as Error).message); }
+  };
+  const del = async () => {
+    if (!c) return;
+    if (!confirm(`Delete case ${c.number}? Its evidence links and log are removed (the recordings themselves stay).`)) return;
+    try { await api.deleteCase(caseId); onChanged(); onBack(); }
+    catch (e) { alert((e as Error).message); }
+  };
+
+  if (!c) return <div className="dash-loading">{msg}</div>;
+
+  return (
+    <div className="case-detail">
+      <div className="case-detail-top">
+        <button className="text-btn" onClick={onBack}>← All cases</button>
+        <span className={"case-status s-" + c.status}>{STATUS_LABEL[c.status] || c.status}</span>
+      </div>
+
+      <div className="case-head">
+        <span className="case-num">Case {c.number}</span>
+        <input className="case-title-edit" defaultValue={c.title}
+          onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== c.title) patch({ title: v }); }} />
+      </div>
+
+      <div className="case-meta">
+        <label>Status</label>
+        <select className="native-select" value={c.status} onChange={(e) => patch({ status: e.target.value })}>
+          {statuses.map((s) => <option key={s} value={s}>{STATUS_LABEL[s] || s}</option>)}
+        </select>
+        <label>Subject</label>
+        <input defaultValue={c.subject || ""} placeholder="suspected party"
+          onBlur={(e) => { if (e.target.value !== (c.subject || "")) patch({ subject: e.target.value }); }} />
+      </div>
+
+      <label className="case-lbl">Summary</label>
+      <textarea className="case-summary" rows={2} defaultValue={c.summary || ""}
+        placeholder="what happened…"
+        onBlur={(e) => { if (e.target.value !== (c.summary || "")) patch({ summary: e.target.value }); }} />
+
+      <h4>Evidence — {c.items.length} recording{c.items.length === 1 ? "" : "s"}</h4>
+      {c.items.length === 0 ? (
+        <div className="dash-empty">No recordings yet. Add one from the ⋯ menu on any transmission.</div>
+      ) : (
+        <div className="case-ev">
+          {c.items.map((it) => (
+            <div className="case-ev-row" key={it.id}>
+              <div className="case-ev-meta">
+                <span className="case-ev-when">{fmtWhen(it.started_at)}</span>
+                <span className="case-ev-sub">
+                  {fmtSecs(it.duration_ms)} · tx {it.tx_id}
+                  {it.origin ? ` · from ${it.origin}` : ""}
+                  {it.origin_hub ? ` · hub ${it.origin_hub}` : ""}
+                </span>
+                {it.label ? <span className="case-ev-label">{it.label}</span> : null}
+                {it.note ? <span className="case-ev-note">{it.note}</span> : null}
+              </div>
+              {it.has_audio ? (
+                // eslint-disable-next-line jsx-a11y/media-has-caption
+                <audio className="case-ev-audio" controls preload="none" src={api.audioUrl(it.tx_id)} />
+              ) : (
+                <span className="case-ev-gone">audio purged</span>
+              )}
+              <button className="case-ev-x" title="Remove from case" onClick={() => removeItem(it.id)}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <h4>Activity log</h4>
+      <div className="case-log">
+        {c.notes.map((n) => (
+          <div className={"case-log-row" + (n.kind === "system" ? " sys" : "")} key={n.id}>
+            <span className="case-log-ts">{fmtWhen(n.ts)}</span>
+            <span className="case-log-au">{n.author || "system"}</span>
+            <span className="case-log-tx">{n.text}</span>
+          </div>
+        ))}
+      </div>
+      <div className="case-addnote">
+        <input value={note} placeholder="Add a note to the log…"
+          onChange={(e) => setNote(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") addNote(); }} />
+        <button className="text-btn" onClick={addNote}>Add note</button>
+      </div>
+
+      <div className="case-detail-foot">
+        <a className="text-btn" href={api.caseExportUrl(caseId)} target="_blank" rel="noopener">
+          Export report
+        </a>
+        {isSuper ? <button className="text-btn danger" onClick={del}>Delete case</button> : null}
+      </div>
+    </div>
+  );
+}
+
+// ---------- top-level modal ----------
+export function CasesModal() {
+  const { closeModal, status } = useApp();
+  const isSuper = !!status?.is_super;
+  const [data, setData] = useState<CasesResponse | null>(null);
+  const [msg, setMsg] = useState("loading cases…");
+  const [filter, setFilter] = useState("all");
+  const [sel, setSel] = useState<number | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  const reload = useCallback(() => {
+    api.cases().then((d) => { setData(d); if (!d.cases.length) setMsg("No cases yet."); })
+      .catch((e) => setMsg((e as Error).message));
+  }, []);
+  useEffect(reload, [reload]);
+
+  const shown = useMemo(() => {
+    if (!data) return [] as CaseSummary[];
+    return filter === "all" ? data.cases : data.cases.filter((c) => c.status === filter);
+  }, [data, filter]);
+
+  if (sel != null && data) {
+    return (
+      <SqModal title="Cases" wide onClose={closeModal}
+        footer={<button className="text-btn primary" onClick={closeModal}>Close</button>}>
+        <Detail caseId={sel} statuses={data.statuses}
+          isSuper={isSuper} onBack={() => setSel(null)} onChanged={reload} />
+      </SqModal>
+    );
+  }
+
+  return (
+    <SqModal title="Cases" wide onClose={closeModal}
+      footer={<button className="text-btn primary" onClick={closeModal}>Close</button>}>
+      {creating && data ? (
+        <NewCase
+          onCreate={(c) => { setCreating(false); reload(); setSel(c.id); }}
+          onCancel={() => setCreating(false)} />
+      ) : (
+        <>
+          <div className="case-toolbar">
+            <div className="seg">
+              {["all", ...(data?.statuses || [])].map((s) => (
+                <button key={s} className={"seg-btn" + (filter === s ? " on" : "")}
+                  onClick={() => setFilter(s)}>
+                  {s === "all" ? "All" : (STATUS_LABEL[s] || s)}
+                </button>
+              ))}
+            </div>
+            <button className="text-btn primary case-new" onClick={() => setCreating(true)}>
+              <FontAwesomeIcon icon={ICONS.addCase} /> New case
+            </button>
+          </div>
+
+          {!data ? (
+            <div className="dash-loading">{msg}</div>
+          ) : shown.length === 0 ? (
+            <div className="dash-empty">{data.cases.length ? "No cases with that status." : msg}</div>
+          ) : (
+            <div className="case-table-wrap">
+              <table className="case-table">
+                <thead>
+                  <tr><th>Case</th><th>Title</th><th>Status</th><th>Evidence</th><th>Opened</th></tr>
+                </thead>
+                <tbody>
+                  {shown.map((c) => (
+                    <tr key={c.id} onClick={() => setSel(c.id)}>
+                      <td className="case-tnum">{c.number}</td>
+                      <td>{c.title}{c.subject ? <span className="case-tsub"> · {c.subject}</span> : null}</td>
+                      <td><span className={"case-status s-" + c.status}>{STATUS_LABEL[c.status] || c.status}</span></td>
+                      <td>{c.item_count}</td>
+                      <td className="muted">{fmtWhen(c.opened_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </SqModal>
+  );
+}

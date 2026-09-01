@@ -31,6 +31,8 @@ import {
   faCheck,
   faUsers,
   faListUl,
+  faFolderOpen,
+  faFolderPlus,
 } from "@fortawesome/free-solid-svg-icons";
 import { signalBars } from "@/lib/format";
 
@@ -67,6 +69,8 @@ export const ICONS = {
   log: faListUl,
   voter: faSatelliteDish,
   network: faShareNodes,
+  cases: faFolderOpen,
+  addCase: faFolderPlus,
 };
 
 /** Stylized batwing "M" for MDC (Motorola signaling) badges. */

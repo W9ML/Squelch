@@ -51,6 +51,7 @@ function jsonBody(method: string, path: string, body?: unknown) {
 
 const post = <T = unknown>(p: string, b?: unknown) => jsonBody("POST", p, b) as Promise<T>;
 const del = <T = unknown>(p: string) => jsonBody("DELETE", p) as Promise<T>;
+const patch = <T = unknown>(p: string, b?: unknown) => jsonBody("PATCH", p, b) as Promise<T>;
 
 async function uploadFile(path: string, file: File): Promise<void> {
   const fd = new FormData();
@@ -80,6 +81,7 @@ export interface FeedParams {
   until?: number;
   has_mdc?: boolean;
   unnamed?: boolean;
+  no_speech?: boolean;
 }
 
 export const api = {
@@ -189,6 +191,29 @@ export const api = {
   deleteWatch: (id: number) => del(`/api/watchlist/${id}`),
   setWatchEnabled: (id: number, enabled: boolean) =>
     post(`/api/watchlist/${id}/enabled`, { enabled }),
+
+  // ---- cases (investigative records) ----
+  cases: (status?: string) =>
+    request<import("./types").CasesResponse>(
+      "/api/cases" + (status ? `?status=${encodeURIComponent(status)}` : "")),
+  case: (id: number) => request<import("./types").CaseDetail>(`/api/cases/${id}`),
+  createCase: (body: { title: string; subject?: string; summary?: string }) =>
+    post<{ ok: boolean; case: import("./types").CaseDetail }>("/api/cases", body),
+  updateCase: (
+    id: number,
+    body: Partial<{ title: string; status: string; subject: string; summary: string }>,
+  ) => patch<{ ok: boolean; case: import("./types").CaseDetail }>(`/api/cases/${id}`, body),
+  deleteCase: (id: number) => del(`/api/cases/${id}`),
+  addCaseItem: (id: number, tx_id: number, label = "", note = "") =>
+    post<{ ok: boolean; already: boolean; case: import("./types").CaseDetail }>(
+      `/api/cases/${id}/items`, { tx_id, label, note }),
+  removeCaseItem: (id: number, item_id: number) =>
+    del<{ ok: boolean; case: import("./types").CaseDetail }>(
+      `/api/cases/${id}/items/${item_id}`),
+  addCaseNote: (id: number, text: string) =>
+    post<{ ok: boolean; case: import("./types").CaseDetail }>(
+      `/api/cases/${id}/notes`, { text }),
+  caseExportUrl: (id: number) => `${BASE}/api/cases/${id}/export`,
 
   // ---- web push ----
   pushVapid: () => request<{ key: string; enabled: boolean }>("/api/push/vapid"),

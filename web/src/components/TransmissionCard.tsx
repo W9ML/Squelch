@@ -541,6 +541,18 @@ export function TransmissionCard({
                   </button>
                   {menuOpen && (
                     <div className="card-menu" role="menu">
+                      {status?.can_settings && (
+                        <button
+                          className="card-menu-item"
+                          role="menuitem"
+                          onClick={() => {
+                            setMenuOpen(false);
+                            openModal({ kind: "addToCase", tx });
+                          }}
+                        >
+                          <FontAwesomeIcon icon={ICONS.addCase} /> Add to case
+                        </button>
+                      )}
                       {tx.speaker_id != null && (
                         <button
                           className="card-menu-item"

@@ -49,6 +49,8 @@ export type Modal =
   | { kind: "callsign"; cs: string }
   | { kind: "connlog" }
   | { kind: "network" }
+  | { kind: "cases" }
+  | { kind: "addToCase"; tx: Transmission }
   | { kind: "timemachine" }
   | {
       kind: "confirm";

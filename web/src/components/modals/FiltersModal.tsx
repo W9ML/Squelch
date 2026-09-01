@@ -17,6 +17,7 @@ export function FiltersModal() {
   const [mdcUnit, setMdcUnit] = useState(f.mdc_unit != null ? String(f.mdc_unit) : "");
   const [hasMdc, setHasMdc] = useState(!!f.has_mdc);
   const [unnamed, setUnnamed] = useState(!!f.unnamed);
+  const [noSpeech, setNoSpeech] = useState(!!f.no_speech);
 
   useEffect(() => {
     api.facets().then(setFacets).catch(() => {});
@@ -40,6 +41,7 @@ export function FiltersModal() {
       mdc_unit: mdcUnit || null,
       has_mdc: hasMdc || null,
       unnamed: unnamed || null,
+      no_speech: noSpeech || null,
     });
     closeModal();
   };
@@ -114,6 +116,10 @@ export function FiltersModal() {
       <label className="filter-check">
         <input type="checkbox" checked={unnamed} onChange={(e) => setUnnamed(e.target.checked)} /> Only
         unidentified (Speaker #) transmissions
+      </label>
+      <label className="filter-check">
+        <input type="checkbox" checked={noSpeech} onChange={(e) => setNoSpeech(e.target.checked)} /> Only
+        non-speech transmissions (audio, no words — jamming / interference)
       </label>
     </SqModal>
   );

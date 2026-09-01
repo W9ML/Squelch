@@ -133,6 +133,48 @@ CREATE TABLE IF NOT EXISTS qso_participant (
 );
 CREATE INDEX IF NOT EXISTS idx_qsopart_qso ON qso_participant(qso_id);
 
+-- Cases: investigative records for documenting interference / incidents
+-- (admin-only). Recordings attached to a case are EXEMPT from the audio purge.
+CREATE TABLE IF NOT EXISTS cases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    number TEXT NOT NULL UNIQUE,            -- human case number, e.g. '2026-001'
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',    -- open|active|suspended|closed|referred
+    subject TEXT,                           -- suspected party (callsign / description)
+    summary TEXT,
+    opened_at REAL NOT NULL,
+    closed_at REAL,
+    created_by TEXT,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status);
+
+-- Evidence: recordings (transmissions) attached to a case. Anything referenced
+-- here is exempt from the age/disk audio purge (see db.expire_audio / _disk_guard).
+CREATE TABLE IF NOT EXISTS case_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id INTEGER NOT NULL REFERENCES cases(id),
+    tx_id INTEGER NOT NULL REFERENCES transmissions(id),
+    label TEXT,
+    note TEXT,
+    added_at REAL NOT NULL,
+    added_by TEXT,
+    UNIQUE(case_id, tx_id)
+);
+CREATE INDEX IF NOT EXISTS idx_caseitems_case ON case_items(case_id);
+CREATE INDEX IF NOT EXISTS idx_caseitems_tx ON case_items(tx_id);
+
+-- Activity log: append-only operator notes + system audit events (chain of custody).
+CREATE TABLE IF NOT EXISTS case_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id INTEGER NOT NULL REFERENCES cases(id),
+    ts REAL NOT NULL,
+    author TEXT,
+    kind TEXT NOT NULL DEFAULT 'note',      -- note|system
+    text TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_casenotes_case ON case_notes(case_id);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS tx_fts USING fts5(
     transcript, content='transmissions', content_rowid='id'
 );
@@ -361,7 +403,8 @@ class Database:
                            since: float | None = None,
                            until: float | None = None,
                            has_mdc: bool = False,
-                           unnamed_only: bool = False) -> list[dict]:
+                           unnamed_only: bool = False,
+                           no_speech: bool = False) -> list[dict]:
         sql = self._TX_SELECT
         args: list = []
         where = []
@@ -386,6 +429,12 @@ class Database:
             args.append(f'%"unit_raw": "{esc}"%')
         if has_mdc:
             where.append("t.mdc_json IS NOT NULL AND t.mdc_json != '[]'")
+        if no_speech:
+            # audio present but no recognized speech: the fingerprint of
+            # jamming/interference (carriers, tones, music, played audio)
+            # that transcription produces nothing for.
+            where.append("t.audio_path IS NOT NULL"
+                         " AND (t.transcript IS NULL OR t.transcript = '')")
         if unnamed_only:
             # transmissions attributed only to an unnamed auto-cluster
             # ("Speaker N") — the queue of voices still waiting to be named.
@@ -486,6 +535,7 @@ class Database:
             rows = self._conn.execute(
                 "SELECT id, audio_path FROM transmissions"
                 " WHERE audio_path IS NOT NULL"
+                "   AND id NOT IN (SELECT tx_id FROM case_items)"  # keep evidence
                 " ORDER BY started_at ASC LIMIT ?", (limit,)).fetchall()
         return [(r["id"], r["audio_path"]) for r in rows]
 
@@ -597,13 +647,16 @@ class Database:
         """Null out audio paths older than the cutoff; returns the file
         paths so the caller can delete them."""
         with self._lock, self._conn:
+            # recordings attached to a case are evidence -> never age out
             rows = self._conn.execute(
                 "SELECT id, audio_path FROM transmissions"
-                " WHERE started_at < ? AND audio_path IS NOT NULL",
+                " WHERE started_at < ? AND audio_path IS NOT NULL"
+                "   AND id NOT IN (SELECT tx_id FROM case_items)",
                 (older_than,)).fetchall()
             self._conn.execute(
                 "UPDATE transmissions SET audio_path=NULL"
-                " WHERE started_at < ? AND audio_path IS NOT NULL",
+                " WHERE started_at < ? AND audio_path IS NOT NULL"
+                "   AND id NOT IN (SELECT tx_id FROM case_items)",
                 (older_than,))
         return [r["audio_path"] for r in rows]
 
@@ -1428,6 +1481,169 @@ class Database:
             return cur.rowcount > 0
 
     # ---- settings ----
+
+    # ---- cases (investigative records for interference / incident docs) ----
+
+    def list_cases(self, status: str | None = None) -> list[dict]:
+        q = ("SELECT c.*,"
+             " (SELECT COUNT(*) FROM case_items WHERE case_id=c.id) AS item_count,"
+             " (SELECT MIN(t.started_at) FROM case_items ci"
+             "  JOIN transmissions t ON t.id=ci.tx_id WHERE ci.case_id=c.id) AS first_evidence,"
+             " (SELECT MAX(t.started_at) FROM case_items ci"
+             "  JOIN transmissions t ON t.id=ci.tx_id WHERE ci.case_id=c.id) AS last_evidence"
+             " FROM cases c")
+        params: tuple = ()
+        if status:
+            q += " WHERE c.status=?"
+            params = (status,)
+        q += " ORDER BY c.opened_at DESC"
+        with self._lock:
+            rows = self._conn.execute(q, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_case(self, case_id: int) -> dict | None:
+        with self._lock:
+            c = self._conn.execute(
+                "SELECT * FROM cases WHERE id=?", (case_id,)).fetchone()
+            if not c:
+                return None
+            items = self._conn.execute(
+                "SELECT ci.id, ci.tx_id, ci.label, ci.note, ci.added_at, ci.added_by,"
+                " t.started_at, t.duration_ms, t.origin, t.origin_hub, t.transcript,"
+                " (t.audio_path IS NOT NULL) AS has_audio"
+                " FROM case_items ci JOIN transmissions t ON t.id=ci.tx_id"
+                " WHERE ci.case_id=? ORDER BY t.started_at", (case_id,)).fetchall()
+            notes = self._conn.execute(
+                "SELECT id, ts, author, kind, text FROM case_notes"
+                " WHERE case_id=? ORDER BY ts, id", (case_id,)).fetchall()
+        d = dict(c)
+        d["items"] = [dict(r) for r in items]
+        d["notes"] = [dict(r) for r in notes]
+        return d
+
+    def create_case(self, title: str, created_by: str,
+                    subject: str = "", summary: str = "") -> dict:
+        now = time.time()
+        year = time.strftime("%Y", time.localtime(now))
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT number FROM cases WHERE number LIKE ?"
+                " ORDER BY number DESC LIMIT 1", (f"{year}-%",)).fetchone()
+            seq = (int(row["number"].split("-")[1]) + 1) if row else 1
+            number = f"{year}-{seq:03d}"
+            cur = self._conn.execute(
+                "INSERT INTO cases (number,title,status,subject,summary,"
+                "opened_at,created_by,updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (number, title, "open", subject, summary, now, created_by, now))
+            cid = cur.lastrowid
+            self._conn.execute(
+                "INSERT INTO case_notes (case_id,ts,author,kind,text)"
+                " VALUES (?,?,?,'system',?)",
+                (cid, now, created_by, f"Case {number} opened"))
+        return self.get_case(cid)
+
+    def update_case(self, case_id: int, fields: dict, actor: str = "") -> bool:
+        sets, params = [], []
+        for k in ("title", "status", "subject", "summary"):
+            if fields.get(k) is not None:
+                sets.append(f"{k}=?")
+                params.append(fields[k])
+        if not sets:
+            return False
+        now = time.time()
+        sets.append("updated_at=?"); params.append(now)
+        if fields.get("status") == "closed":
+            sets.append("closed_at=?"); params.append(now)
+        elif fields.get("status") is not None:
+            sets.append("closed_at=NULL")
+        params.append(case_id)
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                f"UPDATE cases SET {', '.join(sets)} WHERE id=?", params)
+            ok = cur.rowcount > 0
+            if ok and fields.get("status") is not None:
+                self._conn.execute(
+                    "INSERT INTO case_notes (case_id,ts,author,kind,text)"
+                    " VALUES (?,?,?,'system',?)",
+                    (case_id, now, actor, f"Status set to {fields['status']}"))
+        return ok
+
+    def delete_case(self, case_id: int) -> bool:
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM case_items WHERE case_id=?", (case_id,))
+            self._conn.execute("DELETE FROM case_notes WHERE case_id=?", (case_id,))
+            cur = self._conn.execute("DELETE FROM cases WHERE id=?", (case_id,))
+            return cur.rowcount > 0
+
+    def add_case_item(self, case_id: int, tx_id: int, label: str = "",
+                      note: str = "", actor: str = "") -> int | None:
+        """Attach a recording as evidence. Returns the new item id, 0 if it was
+        already attached, or None if the case/transmission doesn't exist."""
+        now = time.time()
+        with self._lock, self._conn:
+            if not self._conn.execute("SELECT 1 FROM cases WHERE id=?",
+                                      (case_id,)).fetchone():
+                return None
+            if not self._conn.execute("SELECT 1 FROM transmissions WHERE id=?",
+                                      (tx_id,)).fetchone():
+                return None
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO case_items (case_id,tx_id,label,note,added_at,added_by)"
+                    " VALUES (?,?,?,?,?,?)",
+                    (case_id, tx_id, label, note, now, actor))
+            except sqlite3.IntegrityError:
+                return 0                       # already attached (UNIQUE)
+            self._conn.execute("UPDATE cases SET updated_at=? WHERE id=?",
+                               (now, case_id))
+            lbl = f" — {label}" if label else ""
+            self._conn.execute(
+                "INSERT INTO case_notes (case_id,ts,author,kind,text)"
+                " VALUES (?,?,?,'system',?)",
+                (case_id, now, actor, f"Evidence added: tx {tx_id}{lbl}"))
+            return cur.lastrowid
+
+    def remove_case_item(self, case_id: int, item_id: int,
+                         actor: str = "") -> bool:
+        now = time.time()
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT tx_id FROM case_items WHERE id=? AND case_id=?",
+                (item_id, case_id)).fetchone()
+            if not row:
+                return False
+            self._conn.execute("DELETE FROM case_items WHERE id=?", (item_id,))
+            self._conn.execute("UPDATE cases SET updated_at=? WHERE id=?",
+                               (now, case_id))
+            self._conn.execute(
+                "INSERT INTO case_notes (case_id,ts,author,kind,text)"
+                " VALUES (?,?,?,'system',?)",
+                (case_id, now, actor, f"Evidence removed: tx {row['tx_id']}"))
+            return True
+
+    def add_case_note(self, case_id: int, text: str,
+                      author: str = "") -> int | None:
+        now = time.time()
+        with self._lock, self._conn:
+            if not self._conn.execute("SELECT 1 FROM cases WHERE id=?",
+                                      (case_id,)).fetchone():
+                return None
+            cur = self._conn.execute(
+                "INSERT INTO case_notes (case_id,ts,author,kind,text)"
+                " VALUES (?,?,?,'note',?)", (case_id, now, author, text))
+            self._conn.execute("UPDATE cases SET updated_at=? WHERE id=?",
+                               (now, case_id))
+            return cur.lastrowid
+
+    def cases_for_tx(self, tx_id: int) -> list[dict]:
+        """Which cases a recording is filed under (for the transmission card)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT c.id, c.number, c.title FROM case_items ci"
+                " JOIN cases c ON c.id=ci.case_id WHERE ci.tx_id=?"
+                " ORDER BY c.opened_at DESC", (tx_id,)).fetchall()
+        return [dict(r) for r in rows]
 
     def get_setting(self, key: str, default: str | None = None) -> str | None:
         with self._lock:

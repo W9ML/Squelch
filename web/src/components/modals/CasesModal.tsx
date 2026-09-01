@@ -79,6 +79,14 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
   const [c, setC] = useState<CaseDetail | null>(null);
   const [note, setNote] = useState("");
   const [msg, setMsg] = useState("loading…");
+  // themed confirm dialogs, in place of native window.prompt / confirm
+  const [dialog, setDialog] = useState<
+    | { kind: "closure"; next: string; verb: string }
+    | { kind: "delete" }
+    | null
+  >(null);
+  const [dlgNote, setDlgNote] = useState("");
+  const [dlgBusy, setDlgBusy] = useState(false);
 
   const load = useCallback(() => {
     api.case(caseId).then(setC).catch((e) => setMsg((e as Error).message));
@@ -91,22 +99,28 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
     try { const { case: nc } = await api.updateCase(caseId, body); setC(nc); }
     catch (e) { alert((e as Error).message); load(); }
   };
-  const changeStatus = async (next: string) => {
+  const changeStatus = (next: string) => {
     if (!c || next === c.status) return;
+    // hold Closed/Referred behind a themed confirm + closure note
     if (next === "closed" || next === "referred") {
-      const verb = next === "closed" ? "Close" : "Refer";
-      const disp = window.prompt(
-        `${verb} case ${c.number}?\n\nAdd a closure note (outcome / disposition):`, "");
-      if (disp === null) return;                 // cancelled — leave status as-is
-      setC((cur) => (cur ? { ...cur, status: next } : cur));
-      try {
-        await api.updateCase(caseId, { status: next });
-        if (disp.trim()) await api.addCaseNote(caseId, `[${verb}d] ${disp.trim()}`);
-        setC(await api.case(caseId));            // reconcile: log entries + closed_at
-      } catch (e) { alert((e as Error).message); load(); }
+      setDlgNote("");
+      setDialog({ kind: "closure", next, verb: next === "closed" ? "Close" : "Refer" });
       return;
     }
     patch({ status: next });
+  };
+  const confirmClosure = async () => {
+    if (dialog?.kind !== "closure" || !c) return;
+    const { next, verb } = dialog;
+    setDlgBusy(true);
+    setC((cur) => (cur ? { ...cur, status: next } : cur));   // optimistic
+    try {
+      await api.updateCase(caseId, { status: next });
+      if (dlgNote.trim()) await api.addCaseNote(caseId, `[${verb}d] ${dlgNote.trim()}`);
+      setC(await api.case(caseId));            // reconcile: log entries + closed_at
+      setDialog(null);
+    } catch (e) { alert((e as Error).message); load(); setDialog(null); }
+    finally { setDlgBusy(false); }
   };
   const removeItem = async (itemId: number) => {
     try { const { case: nc } = await api.removeCaseItem(caseId, itemId); setC(nc); }
@@ -118,16 +132,16 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
     try { const { case: nc } = await api.addCaseNote(caseId, t); setC(nc); }
     catch (e) { alert((e as Error).message); }
   };
-  const del = async () => {
-    if (!c) return;
-    if (!confirm(`Delete case ${c.number}? Its evidence links and log are removed (the recordings themselves stay).`)) return;
+  const confirmDelete = async () => {
+    setDlgBusy(true);
     try { await api.deleteCase(caseId); onBack(); }
-    catch (e) { alert((e as Error).message); }
+    catch (e) { alert((e as Error).message); setDlgBusy(false); setDialog(null); }
   };
 
   if (!c) return <div className="dash-loading">{msg}</div>;
 
   return (
+    <>
     <div className="case-detail">
       <div className="case-detail-top">
         <button className="text-btn" onClick={onBack}>← All cases</button>
@@ -208,9 +222,47 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
         <a className="text-btn" href={api.caseExportZipUrl(caseId)}>
           Export + audio (ZIP)
         </a>
-        {isSuper ? <button className="text-btn danger" onClick={del}>Delete case</button> : null}
+        {isSuper ? <button className="text-btn danger" onClick={() => setDialog({ kind: "delete" })}>Delete case</button> : null}
       </div>
     </div>
+
+    {dialog?.kind === "closure" && (
+      <SqModal
+        title={`${dialog.verb} case ${c.number}`}
+        onClose={() => { if (!dlgBusy) setDialog(null); }}
+        footer={<>
+          <button className="text-btn" disabled={dlgBusy} onClick={() => setDialog(null)}>Cancel</button>
+          <button className="text-btn primary" disabled={dlgBusy} onClick={confirmClosure}>
+            {dlgBusy ? "Saving…" : `${dialog.verb} case`}
+          </button>
+        </>}
+      >
+        <div className="case-form">
+          <label>Closure note <span className="hint">(outcome / disposition — filed in the activity log)</span></label>
+          <textarea autoFocus rows={4} value={dlgNote}
+            placeholder="e.g. Referred to the frequency coordinator; operator identified via voiceprint."
+            onChange={(e) => setDlgNote(e.target.value)} />
+        </div>
+      </SqModal>
+    )}
+
+    {dialog?.kind === "delete" && (
+      <SqModal
+        title={`Delete case ${c.number}?`}
+        onClose={() => { if (!dlgBusy) setDialog(null); }}
+        footer={<>
+          <button className="text-btn" disabled={dlgBusy} onClick={() => setDialog(null)}>Cancel</button>
+          <button className="text-btn danger" disabled={dlgBusy} onClick={confirmDelete}>
+            {dlgBusy ? "Deleting…" : "Delete case"}
+          </button>
+        </>}
+      >
+        <p className="case-dlg-lead">
+          Its evidence links and activity log are removed. The recordings themselves stay in the archive.
+        </p>
+      </SqModal>
+    )}
+    </>
   );
 }
 

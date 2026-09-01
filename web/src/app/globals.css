@@ -1465,6 +1465,22 @@ canvas.wave { flex: 1; height: 38px; min-width: 0; cursor: pointer; display: blo
   font-family: inherit;
 }
 .sq-modal input:focus, .sq-modal select:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.sq-modal textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 9px 12px;
+  margin: 2px 0 6px;
+  outline: none;
+  font-family: inherit;
+  font-size: .92rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+.sq-modal textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.case-dlg-lead { margin: 0.2rem 0 0.2rem; color: var(--text-dim); line-height: 1.5; }
 
 /* datetime-local pickers (Filters + Stats "Net window"): the base rule above
    now sizes/fills them like the sibling selects; this adds the datetime polish

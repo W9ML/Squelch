@@ -9,8 +9,7 @@ import { ICONS } from "../icons";
 import { SqModal } from "./SqModal";
 
 type CasePatch = Partial<{
-  title: string; status: string; priority: string;
-  category: string; subject: string; summary: string;
+  title: string; status: string; subject: string; summary: string;
 }>;
 
 const STATUS_LABEL: Record<string, string> = {
@@ -57,7 +56,7 @@ function NewCase({ onCreate, onCancel }: {
       <input autoFocus value={title}
         placeholder="e.g. Malicious carrier during Tuesday net"
         onChange={(e) => setTitle(e.target.value)} />
-      <label>Suspected party <span className="hint">(callsign or description, optional)</span></label>
+      <label>Suspected operator <span className="hint">(callsign or description, optional)</span></label>
       <input value={subject} onChange={(e) => setSubject(e.target.value)} />
       <label>Summary</label>
       <textarea rows={3} value={summary} onChange={(e) => setSummary(e.target.value)} />
@@ -73,9 +72,9 @@ function NewCase({ onCreate, onCancel }: {
 }
 
 // ---------- case detail ----------
-function Detail({ caseId, statuses, isSuper, onBack, onChanged }: {
+function Detail({ caseId, statuses, isSuper, onBack }: {
   caseId: number; statuses: string[]; isSuper: boolean;
-  onBack: () => void; onChanged: () => void;
+  onBack: () => void;
 }) {
   const [c, setC] = useState<CaseDetail | null>(null);
   const [note, setNote] = useState("");
@@ -86,23 +85,43 @@ function Detail({ caseId, statuses, isSuper, onBack, onChanged }: {
   }, [caseId]);
   useEffect(load, [load]);
 
+  // optimistic: reflect the change instantly, then reconcile with the server
   const patch = async (body: CasePatch) => {
-    try { const { case: nc } = await api.updateCase(caseId, body); setC(nc); onChanged(); }
-    catch (e) { alert((e as Error).message); }
+    setC((cur) => (cur ? { ...cur, ...body } : cur));
+    try { const { case: nc } = await api.updateCase(caseId, body); setC(nc); }
+    catch (e) { alert((e as Error).message); load(); }
+  };
+  const changeStatus = async (next: string) => {
+    if (!c || next === c.status) return;
+    if (next === "closed" || next === "referred") {
+      const verb = next === "closed" ? "Close" : "Refer";
+      const disp = window.prompt(
+        `${verb} case ${c.number}?\n\nAdd a closure note (outcome / disposition):`, "");
+      if (disp === null) return;                 // cancelled — leave status as-is
+      setC((cur) => (cur ? { ...cur, status: next } : cur));
+      try {
+        await api.updateCase(caseId, { status: next });
+        if (disp.trim()) await api.addCaseNote(caseId, `[${verb}d] ${disp.trim()}`);
+        setC(await api.case(caseId));            // reconcile: log entries + closed_at
+      } catch (e) { alert((e as Error).message); load(); }
+      return;
+    }
+    patch({ status: next });
   };
   const removeItem = async (itemId: number) => {
-    try { const { case: nc } = await api.removeCaseItem(caseId, itemId); setC(nc); onChanged(); }
+    try { const { case: nc } = await api.removeCaseItem(caseId, itemId); setC(nc); }
     catch (e) { alert((e as Error).message); }
   };
   const addNote = async () => {
     const t = note.trim(); if (!t) return;
-    try { const { case: nc } = await api.addCaseNote(caseId, t); setC(nc); setNote(""); onChanged(); }
+    setNote("");
+    try { const { case: nc } = await api.addCaseNote(caseId, t); setC(nc); }
     catch (e) { alert((e as Error).message); }
   };
   const del = async () => {
     if (!c) return;
     if (!confirm(`Delete case ${c.number}? Its evidence links and log are removed (the recordings themselves stay).`)) return;
-    try { await api.deleteCase(caseId); onChanged(); onBack(); }
+    try { await api.deleteCase(caseId); onBack(); }
     catch (e) { alert((e as Error).message); }
   };
 
@@ -123,11 +142,11 @@ function Detail({ caseId, statuses, isSuper, onBack, onChanged }: {
 
       <div className="case-meta">
         <label>Status</label>
-        <select className="native-select" value={c.status} onChange={(e) => patch({ status: e.target.value })}>
+        <select className="native-select" value={c.status} onChange={(e) => changeStatus(e.target.value)}>
           {statuses.map((s) => <option key={s} value={s}>{STATUS_LABEL[s] || s}</option>)}
         </select>
-        <label>Subject</label>
-        <input defaultValue={c.subject || ""} placeholder="suspected party"
+        <label>Suspected operator</label>
+        <input defaultValue={c.subject || ""} placeholder="callsign or description"
           onBlur={(e) => { if (e.target.value !== (c.subject || "")) patch({ subject: e.target.value }); }} />
       </div>
 
@@ -186,6 +205,9 @@ function Detail({ caseId, statuses, isSuper, onBack, onChanged }: {
         <a className="text-btn" href={api.caseExportUrl(caseId)} target="_blank" rel="noopener">
           Export report
         </a>
+        <a className="text-btn" href={api.caseExportZipUrl(caseId)}>
+          Export + audio (ZIP)
+        </a>
         {isSuper ? <button className="text-btn danger" onClick={del}>Delete case</button> : null}
       </div>
     </div>
@@ -218,7 +240,7 @@ export function CasesModal() {
       <SqModal title="Cases" wide onClose={closeModal}
         footer={<button className="text-btn primary" onClick={closeModal}>Close</button>}>
         <Detail caseId={sel} statuses={data.statuses}
-          isSuper={isSuper} onBack={() => setSel(null)} onChanged={reload} />
+          isSuper={isSuper} onBack={() => { reload(); setSel(null); }} />
       </SqModal>
     );
   }

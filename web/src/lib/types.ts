@@ -358,8 +358,6 @@ export interface CaseSummary {
   created_by: string | null;
   updated_at: number;
   item_count: number;
-  first_evidence: number | null;
-  last_evidence: number | null;
 }
 
 /** One recording (transmission) filed as evidence under a case. */

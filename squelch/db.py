@@ -1486,11 +1486,7 @@ class Database:
 
     def list_cases(self, status: str | None = None) -> list[dict]:
         q = ("SELECT c.*,"
-             " (SELECT COUNT(*) FROM case_items WHERE case_id=c.id) AS item_count,"
-             " (SELECT MIN(t.started_at) FROM case_items ci"
-             "  JOIN transmissions t ON t.id=ci.tx_id WHERE ci.case_id=c.id) AS first_evidence,"
-             " (SELECT MAX(t.started_at) FROM case_items ci"
-             "  JOIN transmissions t ON t.id=ci.tx_id WHERE ci.case_id=c.id) AS last_evidence"
+             " (SELECT COUNT(*) FROM case_items WHERE case_id=c.id) AS item_count"
              " FROM cases c")
         params: tuple = ()
         if status:

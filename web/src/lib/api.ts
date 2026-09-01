@@ -214,6 +214,7 @@ export const api = {
     post<{ ok: boolean; case: import("./types").CaseDetail }>(
       `/api/cases/${id}/notes`, { text }),
   caseExportUrl: (id: number) => `${BASE}/api/cases/${id}/export`,
+  caseExportZipUrl: (id: number) => `${BASE}/api/cases/${id}/export.zip`,
 
   // ---- web push ----
   pushVapid: () => request<{ key: string; enabled: boolean }>("/api/push/vapid"),

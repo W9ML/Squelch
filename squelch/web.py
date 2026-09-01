@@ -487,7 +487,7 @@ def _render_case_report(case: dict, site_name: str) -> str:
         f"generated {ts(time.time())}</div>"
         "<dl>"
         f"<dt>Status</dt><dd>{esc(case['status'])}</dd>"
-        f"<dt>Subject</dt><dd>{esc(case.get('subject')) or '—'}</dd>"
+        f"<dt>Suspected operator</dt><dd>{esc(case.get('subject')) or '—'}</dd>"
         f"<dt>Opened</dt><dd>{ts(case['opened_at'])}</dd>"
         f"<dt>Evidence</dt><dd>{len(case.get('items', []))} recording(s)</dd>"
         "</dl>"
@@ -1549,6 +1549,38 @@ def create_app(cfg: Config) -> FastAPI:
             raise HTTPException(status_code=404, detail="no such case")
         site = db.get_setting("site_name", cfg.site_name) or "Squelch"
         return HTMLResponse(_render_case_report(case, site))
+
+    @app.get("/api/cases/{case_id}/export.zip")
+    async def export_case_zip_ep(case_id: int, request: Request):
+        require_settings(request)
+        case = await asyncio.to_thread(db.get_case, case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="no such case")
+        site = db.get_setting("site_name", cfg.site_name) or "Squelch"
+
+        def build() -> bytes:
+            # the report + every attached recording still on disk, one zip
+            import io
+            import zipfile
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                z.writestr(f"case_{case['number']}_report.html",
+                           _render_case_report(case, site))
+                for it in case["items"]:
+                    if not it.get("has_audio"):
+                        continue
+                    p = db.get_audio_path(it["tx_id"])
+                    if p and os.path.exists(p):
+                        stamp = time.strftime("%Y%m%d-%H%M%S",
+                                              time.localtime(it["started_at"]))
+                        z.write(p, f"recordings/{stamp}_tx{it['tx_id']}.wav")
+            return buf.getvalue()
+
+        data = await asyncio.to_thread(build)
+        return Response(
+            content=data, media_type="application/zip",
+            headers={"Content-Disposition":
+                     f'attachment; filename="case_{case["number"]}.zip"'})
 
     # ---- web push (phone/desktop alerts when the app is closed) ----
 

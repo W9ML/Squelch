@@ -37,6 +37,7 @@ export function SqModal({
         maxH="88vh"
         bg="var(--card)"
         color="var(--text)"
+        aria-label={title}
       >
         {!noClose && (
           <button className="sq-close" aria-label="Close" title="Close" onClick={onClose}>

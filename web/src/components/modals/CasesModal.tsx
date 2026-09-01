@@ -87,6 +87,8 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
   >(null);
   const [dlgNote, setDlgNote] = useState("");
   const [dlgBusy, setDlgBusy] = useState(false);
+  const [err, setErr] = useState("");        // inline detail error (themed, not alert)
+  const [dlgErr, setDlgErr] = useState("");  // inline error inside the open dialog
 
   const load = useCallback(() => {
     api.case(caseId).then(setC).catch((e) => setMsg((e as Error).message));
@@ -95,16 +97,18 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
 
   // optimistic: reflect the change instantly, then reconcile with the server
   const patch = async (body: CasePatch) => {
+    setErr("");
     setC((cur) => (cur ? { ...cur, ...body } : cur));
     try { const { case: nc } = await api.updateCase(caseId, body); setC(nc); }
-    catch (e) { alert((e as Error).message); load(); }
+    catch (e) { setErr((e as Error).message); load(); }
   };
+  const openDialog = (d: Exclude<typeof dialog, null>) => { setDlgErr(""); setDialog(d); };
   const changeStatus = (next: string) => {
     if (!c || next === c.status) return;
     // hold Closed/Referred behind a themed confirm + closure note
     if (next === "closed" || next === "referred") {
       setDlgNote("");
-      setDialog({ kind: "closure", next, verb: next === "closed" ? "Close" : "Refer" });
+      openDialog({ kind: "closure", next, verb: next === "closed" ? "Close" : "Refer" });
       return;
     }
     patch({ status: next });
@@ -112,30 +116,31 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
   const confirmClosure = async () => {
     if (dialog?.kind !== "closure" || !c) return;
     const { next, verb } = dialog;
-    setDlgBusy(true);
+    setDlgBusy(true); setDlgErr("");
     setC((cur) => (cur ? { ...cur, status: next } : cur));   // optimistic
     try {
       await api.updateCase(caseId, { status: next });
       if (dlgNote.trim()) await api.addCaseNote(caseId, `[${verb}d] ${dlgNote.trim()}`);
       setC(await api.case(caseId));            // reconcile: log entries + closed_at
       setDialog(null);
-    } catch (e) { alert((e as Error).message); load(); setDialog(null); }
+    } catch (e) { setDlgErr((e as Error).message); load(); }   // keep dialog open to retry
     finally { setDlgBusy(false); }
   };
   const removeItem = async (itemId: number) => {
+    setErr("");
     try { const { case: nc } = await api.removeCaseItem(caseId, itemId); setC(nc); }
-    catch (e) { alert((e as Error).message); }
+    catch (e) { setErr((e as Error).message); }
   };
   const addNote = async () => {
     const t = note.trim(); if (!t) return;
-    setNote("");
-    try { const { case: nc } = await api.addCaseNote(caseId, t); setC(nc); }
-    catch (e) { alert((e as Error).message); }
+    setErr("");
+    try { const { case: nc } = await api.addCaseNote(caseId, t); setC(nc); setNote(""); }
+    catch (e) { setErr((e as Error).message); }   // keep the typed note on failure
   };
   const confirmDelete = async () => {
-    setDlgBusy(true);
+    setDlgBusy(true); setDlgErr("");
     try { await api.deleteCase(caseId); onBack(); }
-    catch (e) { alert((e as Error).message); setDlgBusy(false); setDialog(null); }
+    catch (e) { setDlgErr((e as Error).message); setDlgBusy(false); }  // keep dialog open
   };
 
   if (!c) return <div className="dash-loading">{msg}</div>;
@@ -147,6 +152,7 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
         <button className="text-btn" onClick={onBack}>← All cases</button>
         <span className={"case-status s-" + c.status}>{STATUS_LABEL[c.status] || c.status}</span>
       </div>
+      {err ? <div className="err case-err" role="alert">{err}</div> : null}
 
       <div className="case-head">
         <span className="case-num">Case {c.number}</span>
@@ -192,7 +198,7 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
               ) : (
                 <span className="case-ev-gone">audio purged</span>
               )}
-              <button className="case-ev-x" title="Remove from case" onClick={() => removeItem(it.id)}>×</button>
+              <button className="case-ev-x" aria-label="Remove from case" title="Remove from case" onClick={() => removeItem(it.id)}>×</button>
             </div>
           ))}
         </div>
@@ -222,7 +228,7 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
         <a className="text-btn" href={api.caseExportZipUrl(caseId)}>
           Export + audio (ZIP)
         </a>
-        {isSuper ? <button className="text-btn danger" onClick={() => setDialog({ kind: "delete" })}>Delete case</button> : null}
+        {isSuper ? <button className="text-btn danger" onClick={() => openDialog({ kind: "delete" })}>Delete case</button> : null}
       </div>
     </div>
 
@@ -242,6 +248,7 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
           <textarea autoFocus rows={4} value={dlgNote}
             placeholder="e.g. Referred to the frequency coordinator; operator identified via voiceprint."
             onChange={(e) => setDlgNote(e.target.value)} />
+          {dlgErr ? <div className="err" role="alert">{dlgErr}</div> : null}
         </div>
       </SqModal>
     )}
@@ -260,6 +267,7 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
         <p className="case-dlg-lead">
           Its evidence links and activity log are removed. The recordings themselves stay in the archive.
         </p>
+        {dlgErr ? <div className="err" role="alert">{dlgErr}</div> : null}
       </SqModal>
     )}
     </>
@@ -332,7 +340,10 @@ export function CasesModal() {
                 </thead>
                 <tbody>
                   {shown.map((c) => (
-                    <tr key={c.id} onClick={() => setSel(c.id)}>
+                    <tr key={c.id} tabIndex={0} role="button"
+                      aria-label={`Open case ${c.number}: ${c.title}`}
+                      onClick={() => setSel(c.id)}
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSel(c.id); } }}>
                       <td className="case-tnum">{c.number}</td>
                       <td>{c.title}{c.subject ? <span className="case-tsub"> · {c.subject}</span> : null}</td>
                       <td><span className={"case-status s-" + c.status}>{STATUS_LABEL[c.status] || c.status}</span></td>

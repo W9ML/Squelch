@@ -1179,7 +1179,14 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.delete("/api/transmissions/{tx_id}")
     async def delete_transmission(tx_id: int, request: Request):
-        require_admin(request)
+        require_admin(request)      # content moderation — any logged-in operator
+        # ...but never destroy a recording that's filed as case evidence; unfile
+        # it from the case first. (The row-delete would orphan the case_item.)
+        cases = await asyncio.to_thread(db.cases_for_tx, tx_id)
+        if cases:
+            nums = ", ".join(c["number"] for c in cases)
+            raise HTTPException(status_code=409,
+                detail=f"Filed as evidence in case {nums}; remove it from the case first.")
         audio_path = await asyncio.to_thread(db.delete_transmission, tx_id)
         if audio_path:
             delete_audio_files([audio_path])

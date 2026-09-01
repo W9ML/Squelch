@@ -600,10 +600,13 @@ class Database:
             return row["audio_path"] or None
 
     def count_transmissions_between(self, start: float, end: float) -> int:
+        # excludes case evidence, matching delete_transmissions_between, so the
+        # purge preview and the purge agree on what will actually be removed.
         with self._lock:
             row = self._conn.execute(
                 "SELECT COUNT(*) AS n FROM transmissions"
-                " WHERE started_at >= ? AND started_at < ?",
+                " WHERE started_at >= ? AND started_at < ?"
+                " AND id NOT IN (SELECT tx_id FROM case_items)",
                 (start, end)).fetchone()
         return row["n"]
 
@@ -633,14 +636,20 @@ class Database:
                                      end: float) -> list[str]:
         """Delete all transmissions in [start, end); returns audio paths
         for file cleanup."""
+        # recordings filed as case evidence are exempt (as with the automatic
+        # purges) -- keep both the row and the WAV so a case can't be gutted
+        # by a range purge.
         with self._lock, self._conn:
             rows = self._conn.execute(
                 "SELECT audio_path FROM transmissions"
                 " WHERE started_at >= ? AND started_at < ?"
-                " AND audio_path IS NOT NULL", (start, end)).fetchall()
+                " AND audio_path IS NOT NULL"
+                " AND id NOT IN (SELECT tx_id FROM case_items)",
+                (start, end)).fetchall()
             self._conn.execute(
                 "DELETE FROM transmissions"
-                " WHERE started_at >= ? AND started_at < ?", (start, end))
+                " WHERE started_at >= ? AND started_at < ?"
+                " AND id NOT IN (SELECT tx_id FROM case_items)", (start, end))
         return [r["audio_path"] for r in rows]
 
     def expire_audio(self, older_than: float) -> list[str]:

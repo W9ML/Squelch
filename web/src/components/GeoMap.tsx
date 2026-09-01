@@ -43,9 +43,13 @@ export function GeoMap({ txId, bus }: { txId: number; bus: EventTarget }) {
       setNote("");
 
       map = L.map(elRef.current, { attributionControl: false, zoomControl: true });
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-        maxZoom: 19,
-      }).addTo(map);
+      // Esri "Dark Gray Canvas" — keyless dark basemap (CARTO's free CDN now
+      // watermarks anonymous use). Base = land, Reference = labels overlay.
+      // Native tiles top out at z16; upscale past that instead of blanking.
+      const esri = (layer: string) =>
+        `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/${layer}/MapServer/tile/{z}/{y}/{x}`;
+      L.tileLayer(esri("World_Dark_Gray_Base"), { maxZoom: 19, maxNativeZoom: 16 }).addTo(map);
+      L.tileLayer(esri("World_Dark_Gray_Reference"), { maxZoom: 19, maxNativeZoom: 16 }).addTo(map);
 
       const pts = data.receivers.map((r) => [r.lat, r.lon] as [number, number]);
       const rxMarkers: Record<string, Leaflet.Circle> = {};

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { api } from "@/lib/api";
-import type { CaseDetail, CaseSummary, CasesResponse } from "@/lib/types";
+import type { CaseDetail, CaseSummary, CasesResponse, Transmission } from "@/lib/types";
 import { useApp } from "@/state/app-context";
 import { ICONS } from "../icons";
 import { SqModal } from "./SqModal";
@@ -71,6 +71,69 @@ function NewCase({ onCreate, onCancel }: {
   );
 }
 
+// ---------- similar-voice review queue (a tab inside a case) ----------
+function SimilarQueue({ caseId, onFiled }: { caseId: number; onFiled: () => void }) {
+  const [rows, setRows] = useState<(Transmission & { similarity: number })[] | null>(null);
+  const [seeds, setSeeds] = useState(0);
+  const [msg, setMsg] = useState("searching…");
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    api.caseSimilar(caseId).then((d) => {
+      setRows(d.candidates); setSeeds(d.seeds);
+      if (!d.seeds) setMsg("No voiceprinted evidence yet — file a recording with a voice sample first.");
+      else if (!d.candidates.length) setMsg("No similar-sounding recordings.");
+    }).catch((e) => setMsg((e as Error).message));
+  }, [caseId]);
+
+  const drop = (tx: number) => setRows((r) => r?.filter((x) => x.id !== tx) ?? null);
+  const fileIt = async (tx: number) => {
+    setBusyId(tx); setErr("");
+    try { await api.addCaseItem(caseId, tx); drop(tx); onFiled(); }
+    catch (e) { setErr((e as Error).message); } finally { setBusyId(null); }
+  };
+  const dismiss = async (tx: number) => {
+    setBusyId(tx); setErr("");
+    try { await api.dismissCaseCandidate(caseId, tx); drop(tx); }
+    catch (e) { setErr((e as Error).message); } finally { setBusyId(null); }
+  };
+
+  if (!rows) return <div className="dash-loading">{msg}</div>;
+  if (!rows.length) return <div className="dash-empty">{msg}</div>;
+  return (
+    <div className="case-cand">
+      <p className="muted">
+        Voiceprint neighbours of this case&apos;s {seeds} evidence recording{seeds === 1 ? "" : "s"}.
+        Radio audio is fuzzy — listen before filing.
+      </p>
+      {err ? <div className="err" role="alert">{err}</div> : null}
+      {rows.map((r) => (
+        <div className="case-cand-row" key={r.id}>
+          <span className="case-cand-pct" title="voiceprint similarity">{Math.round(r.similarity * 100)}%</span>
+          <div className="case-cand-meta">
+            <span className="case-ev-when">{fmtWhen(r.started_at)}</span>
+            <span className="case-ev-sub">
+              {fmtSecs(r.duration_ms)} · tx {r.id}{r.origin ? ` · from ${r.origin}` : ""}
+            </span>
+            <span className="case-ev-note">{(r.transcript || "").slice(0, 80) || "—"}</span>
+          </div>
+          {r.has_audio ? (
+            // eslint-disable-next-line jsx-a11y/media-has-caption
+            <audio className="case-ev-audio" controls preload="none" src={api.audioUrl(r.id)} />
+          ) : (
+            <span className="case-ev-gone">audio expired</span>
+          )}
+          <div className="case-cand-act">
+            <button className="text-btn primary" disabled={busyId === r.id} onClick={() => fileIt(r.id)}>Add</button>
+            <button className="text-btn" disabled={busyId === r.id} onClick={() => dismiss(r.id)}>Dismiss</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ---------- case detail ----------
 function Detail({ caseId, statuses, isSuper, onBack }: {
   caseId: number; statuses: string[]; isSuper: boolean;
@@ -90,6 +153,7 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
   const [err, setErr] = useState("");        // inline detail error (themed, not alert)
   const [dlgErr, setDlgErr] = useState("");  // inline error inside the open dialog
   const [noteBusy, setNoteBusy] = useState(false);
+  const [tab, setTab] = useState<"case" | "similar">("case");
 
   const load = useCallback(() => {
     api.case(caseId).then(setC).catch((e) => setMsg((e as Error).message));
@@ -167,6 +231,14 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
           onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== c.title) patch({ title: v }); }} />
       </div>
 
+      <div className="case-tabs seg" role="tablist">
+        <button className={"seg-btn" + (tab === "case" ? " on" : "")}
+          role="tab" aria-selected={tab === "case"} onClick={() => setTab("case")}>Case</button>
+        <button className={"seg-btn" + (tab === "similar" ? " on" : "")}
+          role="tab" aria-selected={tab === "similar"} onClick={() => setTab("similar")}>Similar voices</button>
+      </div>
+
+      {tab === "similar" ? <SimilarQueue caseId={caseId} onFiled={load} /> : <>
       <div className="case-meta">
         <label htmlFor="cd-status">Status</label>
         <select id="cd-status" className="native-select" value={c.status} onChange={(e) => changeStatus(e.target.value)}>
@@ -246,6 +318,7 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
         </a>
         {isSuper ? <button className="text-btn danger" onClick={() => openDialog({ kind: "delete" })}>Delete case</button> : null}
       </div>
+      </>}
     </div>
 
     {dialog?.kind === "closure" && (

@@ -2279,6 +2279,26 @@ span.cs-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px
 .case-addnote input {
   flex: 1;
 }
+.case-tabs { margin: 0.5rem 0 0.7rem; }
+.case-cand { display: flex; flex-direction: column; gap: 0.5rem; }
+.case-cand > .muted { margin: 0 0 0.2rem; }
+.case-cand-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.case-cand-pct {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--accent);
+  min-width: 3.2ch;
+  text-align: right;
+}
+.case-cand-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.05rem; }
+.case-cand-act { display: flex; gap: 0.35rem; flex-shrink: 0; }
 .case-detail-foot {
   display: flex;
   flex-wrap: wrap;                 /* footer buttons stack instead of overflowing on a phone */

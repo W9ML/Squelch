@@ -223,6 +223,12 @@ export const api = {
   txCases: (tx_id: number) =>
     request<{ cases: { id: number; number: string; title: string }[] }>(
       `/api/transmissions/${tx_id}/cases`),
+  /** voiceprint review queue for a case: recordings that sound like its evidence */
+  caseSimilar: (id: number) =>
+    request<{ candidates: (import("./types").Transmission & { similarity: number })[]; seeds: number }>(
+      `/api/cases/${id}/similar`),
+  dismissCaseCandidate: (id: number, tx_id: number) =>
+    post<{ ok: boolean }>(`/api/cases/${id}/dismiss`, { tx_id }),
 
   // ---- web push ----
   pushVapid: () => request<{ key: string; enabled: boolean }>("/api/push/vapid"),

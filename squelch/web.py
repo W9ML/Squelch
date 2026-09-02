@@ -446,6 +446,10 @@ class CaseNoteBody(BaseModel):
     text: str = Field(max_length=20000)
 
 
+class CaseDismissBody(BaseModel):
+    tx_id: int
+
+
 # The case report itself is rendered to PDF by pdfreport.render_case_pdf —
 # see that module. The web layer's only jobs are gathering the case, the
 # site name, and the uploaded branding logo (PNG/JPEG only; SVG/WebP can't
@@ -1519,6 +1523,23 @@ def create_app(cfg: Config) -> FastAPI:
         if await asyncio.to_thread(db.add_case_note, case_id, text, user) is None:
             raise HTTPException(status_code=404, detail="no such case")
         return {"ok": True, "case": await asyncio.to_thread(db.get_case, case_id)}
+
+    @app.get("/api/cases/{case_id}/similar")
+    async def case_similar_ep(case_id: int, request: Request, limit: int = 50):
+        # voiceprint review queue for the case — recordings that sound like its
+        # evidence, for the investigator to listen to and file or dismiss.
+        require_settings(request)
+        if not await asyncio.to_thread(db.get_case, case_id):
+            raise HTTPException(status_code=404, detail="no such case")
+        return await asyncio.to_thread(db.case_similar, case_id, min(max(limit, 1), 100))
+
+    @app.post("/api/cases/{case_id}/dismiss")
+    async def case_dismiss_ep(case_id: int, body: CaseDismissBody, request: Request):
+        user = require_settings(request)
+        if not await asyncio.to_thread(db.get_case, case_id):
+            raise HTTPException(status_code=404, detail="no such case")
+        await asyncio.to_thread(db.dismiss_case_candidate, case_id, body.tx_id, user)
+        return {"ok": True}
 
     def _case_pdf(case: dict) -> bytes:
         # blocking (sqlite read + render) — call via to_thread.

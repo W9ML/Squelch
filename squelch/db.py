@@ -175,6 +175,16 @@ CREATE TABLE IF NOT EXISTS case_notes (
 );
 CREATE INDEX IF NOT EXISTS idx_casenotes_case ON case_notes(case_id);
 
+-- Similar-voice review queue: candidates an investigator has waved off, so the
+-- voiceprint suggestions for a case don't keep resurfacing the same non-matches.
+CREATE TABLE IF NOT EXISTS case_dismissed (
+    case_id INTEGER NOT NULL REFERENCES cases(id),
+    tx_id INTEGER NOT NULL REFERENCES transmissions(id),
+    dismissed_at REAL NOT NULL,
+    dismissed_by TEXT,
+    PRIMARY KEY (case_id, tx_id)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS tx_fts USING fts5(
     transcript, content='transmissions', content_rowid='id'
 );
@@ -1579,6 +1589,7 @@ class Database:
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM case_items WHERE case_id=?", (case_id,))
             self._conn.execute("DELETE FROM case_notes WHERE case_id=?", (case_id,))
+            self._conn.execute("DELETE FROM case_dismissed WHERE case_id=?", (case_id,))
             cur = self._conn.execute("DELETE FROM cases WHERE id=?", (case_id,))
             return cur.rowcount > 0
 
@@ -1671,6 +1682,60 @@ class Database:
                 " JOIN cases c ON c.id=ci.case_id WHERE ci.tx_id=?"
                 " ORDER BY c.opened_at DESC", (tx_id,)).fetchall()
         return [dict(r) for r in rows]
+
+    def case_similar(self, case_id: int, limit: int = 50) -> dict:
+        """Voiceprint review queue: recordings whose embedding is closest to ANY
+        of the case's evidence (max cosine to any seed), ranked. Excludes the
+        case's own evidence and anything already dismissed. `seeds` is how many
+        evidence recordings actually carried a voiceprint to search from."""
+        with self._lock:
+            seed_rows = self._conn.execute(
+                "SELECT t.embedding FROM case_items ci"
+                " JOIN transmissions t ON t.id=ci.tx_id"
+                " WHERE ci.case_id=? AND t.embedding IS NOT NULL",
+                (case_id,)).fetchall()
+            if not seed_rows:
+                return {"candidates": [], "seeds": 0}
+            excl = {r["tx_id"] for r in self._conn.execute(
+                "SELECT tx_id FROM case_items WHERE case_id=?", (case_id,))}
+            excl |= {r["tx_id"] for r in self._conn.execute(
+                "SELECT tx_id FROM case_dismissed WHERE case_id=?", (case_id,))}
+            cand = self._conn.execute(
+                "SELECT id, embedding FROM transmissions"
+                " WHERE embedding IS NOT NULL").fetchall()
+        # seeds as unit vectors, then max cosine of each candidate to any seed
+        seeds = []
+        for r in seed_rows:
+            v = np.frombuffer(r["embedding"], dtype=np.float32)
+            seeds.append(v / (float(np.linalg.norm(v)) or 1e-9))
+        scored = []
+        for c in cand:
+            if c["id"] in excl:
+                continue
+            v = np.frombuffer(c["embedding"], dtype=np.float32)
+            vn = v / (float(np.linalg.norm(v)) or 1e-9)
+            best = max(float(np.dot(vn, s)) for s in seeds)
+            scored.append((c["id"], best))
+        scored.sort(key=lambda kv: kv[1], reverse=True)
+        out = []
+        for cid, sim in scored[:limit]:
+            rec = self.get_transmission(cid)
+            if rec:
+                rec["similarity"] = round(sim, 3)
+                out.append(rec)
+        return {"candidates": out, "seeds": len(seeds)}
+
+    def dismiss_case_candidate(self, case_id: int, tx_id: int,
+                               actor: str = "") -> bool:
+        """Wave a similar-voice candidate off a case's review queue (persistent,
+        so it won't resurface). Not logged to the activity log -- triage, not
+        evidence."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO case_dismissed"
+                " (case_id, tx_id, dismissed_at, dismissed_by) VALUES (?,?,?,?)",
+                (case_id, tx_id, time.time(), actor))
+        return True
 
     def get_setting(self, key: str, default: str | None = None) -> str | None:
         with self._lock:

@@ -512,9 +512,12 @@ class Database:
                 "SELECT id, embedding FROM transmissions"
                 " WHERE embedding IS NOT NULL AND id != ?", (tx_id,)).fetchall()
         tn = float(np.linalg.norm(target)) or 1e-9
+        dim = target.shape[0]
         sims = []
         for e in embs:
             v = np.frombuffer(e["embedding"], dtype=np.float32)
+            if v.shape[0] != dim:      # skip embeddings from a different voice model
+                continue
             denom = (float(np.linalg.norm(v)) * tn) or 1e-9
             sims.append((e["id"], float(np.dot(v, target) / denom)))
         sims.sort(key=lambda kv: kv[1], reverse=True)
@@ -1703,16 +1706,23 @@ class Database:
             cand = self._conn.execute(
                 "SELECT id, embedding FROM transmissions"
                 " WHERE embedding IS NOT NULL").fetchall()
-        # seeds as unit vectors, then max cosine of each candidate to any seed
+        # seeds as unit vectors, then max cosine of each candidate to any seed.
+        # A voice-model change can leave differently-sized embeddings in the
+        # archive; cross-dimension vectors aren't comparable (and np.dot would
+        # raise), so pin to the seed dimension and skip anything else.
         seeds = []
         for r in seed_rows:
             v = np.frombuffer(r["embedding"], dtype=np.float32)
             seeds.append(v / (float(np.linalg.norm(v)) or 1e-9))
+        dim = seeds[0].shape[0]
+        seeds = [s for s in seeds if s.shape[0] == dim]
         scored = []
         for c in cand:
             if c["id"] in excl:
                 continue
             v = np.frombuffer(c["embedding"], dtype=np.float32)
+            if v.shape[0] != dim:
+                continue
             vn = v / (float(np.linalg.norm(v)) or 1e-9)
             best = max(float(np.dot(vn, s)) for s in seeds)
             scored.append((c["id"], best))

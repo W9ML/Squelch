@@ -132,6 +132,11 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
     try { const { case: nc } = await api.removeCaseItem(caseId, itemId); setC(nc); }
     catch (e) { setErr((e as Error).message); }
   };
+  const editItem = async (itemId: number, body: { label?: string; note?: string }) => {
+    setErr("");
+    try { const { case: nc } = await api.updateCaseItem(caseId, itemId, body); setC(nc); }
+    catch (e) { setErr((e as Error).message); load(); }
+  };
   const addNote = async () => {
     const t = note.trim(); if (!t || noteBusy) return;   // guard double-submit
     setErr(""); setNoteBusy(true);
@@ -191,8 +196,14 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
                   {it.origin ? ` · from ${it.origin}` : ""}
                   {it.origin_hub ? ` · hub ${it.origin_hub}` : ""}
                 </span>
-                {it.label ? <span className="case-ev-label">{it.label}</span> : null}
-                {it.note ? <span className="case-ev-note">{it.note}</span> : null}
+                <div className="case-ev-annot">
+                  <input className="case-ev-in label" defaultValue={it.label || ""}
+                    placeholder="label…" aria-label="Evidence label"
+                    onBlur={(e) => { const v = e.target.value.trim(); if (v !== (it.label || "")) editItem(it.id, { label: v }); }} />
+                  <input className="case-ev-in note" defaultValue={it.note || ""}
+                    placeholder="note…" aria-label="Evidence note"
+                    onBlur={(e) => { const v = e.target.value.trim(); if (v !== (it.note || "")) editItem(it.id, { note: v }); }} />
+                </div>
               </div>
               {it.has_audio ? (
                 // eslint-disable-next-line jsx-a11y/media-has-caption
@@ -228,7 +239,7 @@ function Detail({ caseId, statuses, isSuper, onBack }: {
 
       <div className="case-detail-foot">
         <a className="text-btn" href={api.caseExportUrl(caseId)} target="_blank" rel="noopener">
-          Export report
+          Export report (PDF)
         </a>
         <a className="text-btn" href={api.caseExportZipUrl(caseId)}>
           Export + audio (ZIP)

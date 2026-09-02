@@ -1628,6 +1628,27 @@ class Database:
                 (case_id, now, actor, f"Evidence removed: tx {row['tx_id']}"))
             return True
 
+    def update_case_item(self, case_id: int, item_id: int,
+                         fields: dict) -> bool:
+        """Edit an evidence item's label/note (scoped to the case)."""
+        sets, params = [], []
+        for k in ("label", "note"):
+            if fields.get(k) is not None:
+                sets.append(f"{k}=?")
+                params.append(fields[k])
+        if not sets:
+            return False
+        params += [item_id, case_id]
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                f"UPDATE case_items SET {', '.join(sets)}"
+                " WHERE id=? AND case_id=?", params)
+            if cur.rowcount == 0:
+                return False
+            self._conn.execute("UPDATE cases SET updated_at=? WHERE id=?",
+                               (time.time(), case_id))
+            return True
+
     def add_case_note(self, case_id: int, text: str,
                       author: str = "") -> int | None:
         now = time.time()

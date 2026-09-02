@@ -2187,6 +2187,41 @@ span.cs-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px
   color: var(--text-dim);
   font-size: 0.82rem;
 }
+.case-ev-annot {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+}
+.case-ev-in {
+  min-width: 0;
+  font-size: 0.82rem;
+  padding: 0.1rem 0.35rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text);
+}
+.case-ev-in.label {
+  flex: 0 1 34%;
+  color: var(--accent);
+  font-weight: 600;
+}
+.case-ev-in.note {
+  flex: 1 1 auto;
+  color: var(--text-dim);
+}
+.case-ev-in::placeholder {
+  color: var(--text-faint);
+  font-weight: 400;
+}
+.case-ev-in:hover {
+  border-color: var(--border);
+}
+.case-ev-in:focus {
+  border-color: var(--accent);
+  background: var(--bg);
+  color: var(--text);
+}
 .case-ev-audio {
   height: 32px;
   max-width: 240px;

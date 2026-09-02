@@ -24,8 +24,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from . import (__version__, elevenlabs_stt, geo, qrz, tabexport, usrp,
-               watchdog, webpush)
+from . import (__version__, elevenlabs_stt, geo, pdfreport, qrz, tabexport,
+               usrp, watchdog, webpush)
 from .auth import SESSION_COOKIE, SESSION_TTL, AuthManager
 from .callsigns import CALL_RE
 from .config import Config, WHISPER_MODELS
@@ -437,73 +437,19 @@ class CaseItemBody(BaseModel):
     note: str = Field("", max_length=20000)
 
 
+class CaseItemPatch(BaseModel):
+    label: str | None = Field(None, max_length=300)
+    note: str | None = Field(None, max_length=20000)
+
+
 class CaseNoteBody(BaseModel):
     text: str = Field(max_length=20000)
 
 
-def _render_case_report(case: dict, site_name: str) -> str:
-    """Self-contained printable HTML documentation packet for one case."""
-    import html as _html
-
-    def esc(x) -> str:
-        return _html.escape(str(x if x is not None else ""))
-
-    def ts(t) -> str:
-        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) if t else "—"
-
-    css = (
-        "body{font:14px/1.5 system-ui,'Segoe UI',Arial,sans-serif;color:#111;"
-        "max-width:900px;margin:2rem auto;padding:0 1rem}"
-        "h1{margin:0 0 .2rem}h3{margin:1.4rem 0 .4rem}"
-        ".sub{color:#555;margin-bottom:1.4rem}"
-        "table{border-collapse:collapse;width:100%;margin:.4rem 0 1rem;font-size:13px}"
-        "th,td{border:1px solid #ccc;padding:.35rem .5rem;text-align:left;vertical-align:top}"
-        "th{background:#f2f2f2}"
-        "dl{display:grid;grid-template-columns:140px 1fr;gap:.2rem .75rem}"
-        "dt{color:#555;font-weight:600}dd{margin:0}"
-        ".log{border-left:3px solid #ccc;padding:.2rem .75rem;margin:.35rem 0}"
-        ".lt{color:#777;font-variant-numeric:tabular-nums}.la{font-weight:600}"
-        "@media print{body{margin:0}}"
-    )
-    rows = ""
-    for i, it in enumerate(case.get("items", []), 1):
-        secs = round((it.get("duration_ms") or 0) / 1000.0, 1)
-        purged = "" if it.get("has_audio") else " (audio purged)"
-        rows += (f"<tr><td>{i}</td><td>{ts(it['started_at'])}</td><td>{secs}s</td>"
-                 f"<td>{esc(it.get('origin'))}</td><td>{esc(it.get('origin_hub'))}</td>"
-                 f"<td>tx {it['tx_id']}{purged}</td><td>{esc(it.get('label'))}</td>"
-                 f"<td>{esc(it.get('note'))}</td></tr>")
-    if not rows:
-        rows = "<tr><td colspan='8'>No recordings attached.</td></tr>"
-    log = ""
-    for n in case.get("notes", []):
-        sysflag = " · system" if n.get("kind") == "system" else ""
-        log += (f"<div class='log'><span class='lt'>{ts(n['ts'])}</span> "
-                f"<span class='la'>{esc(n.get('author') or 'system')}</span>{sysflag}"
-                f"<br>{esc(n['text'])}</div>")
-    if not log:
-        log = "<p>—</p>"
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        f"<title>Case {esc(case['number'])} — {esc(case['title'])}</title>"
-        f"<style>{css}</style></head><body>"
-        f"<h1>Case {esc(case['number'])} — {esc(case['title'])}</h1>"
-        f"<div class='sub'>{esc(site_name)} · interference documentation · "
-        f"generated {ts(time.time())}</div>"
-        "<dl>"
-        f"<dt>Status</dt><dd>{esc(case['status'])}</dd>"
-        f"<dt>Suspected operator</dt><dd>{esc(case.get('subject')) or '—'}</dd>"
-        f"<dt>Opened</dt><dd>{ts(case['opened_at'])}</dd>"
-        f"<dt>Evidence</dt><dd>{len(case.get('items', []))} recording(s)</dd>"
-        "</dl>"
-        f"<h3>Summary</h3><p>{esc(case.get('summary')) or '—'}</p>"
-        "<h3>Evidence — recordings</h3><table><thead><tr>"
-        "<th>#</th><th>Timestamp (local)</th><th>Length</th><th>Origin</th>"
-        "<th>Hub</th><th>Recording</th><th>Label</th><th>Note</th></tr></thead>"
-        f"<tbody>{rows}</tbody></table>"
-        f"<h3>Activity log</h3>{log}"
-        "</body></html>"
-    )
+# The case report itself is rendered to PDF by pdfreport.render_case_pdf —
+# see that module. The web layer's only jobs are gathering the case, the
+# site name, and the uploaded branding logo (PNG/JPEG only; SVG/WebP can't
+# be embedded dependency-free, so those render without a logo).
 
 
 class _LoginThrottle:
@@ -1544,6 +1490,19 @@ def create_app(cfg: Config) -> FastAPI:
         return {"ok": True, "already": r == 0,
                 "case": await asyncio.to_thread(db.get_case, case_id)}
 
+    @app.patch("/api/cases/{case_id}/items/{item_id}")
+    async def update_case_item_ep(case_id: int, item_id: int,
+                                  body: CaseItemPatch, request: Request):
+        require_settings(request)
+        fields = {k: v.strip() for k, v in
+                  (("label", body.label), ("note", body.note)) if v is not None}
+        if not fields:
+            raise HTTPException(status_code=400, detail="nothing to update")
+        if not await asyncio.to_thread(
+                db.update_case_item, case_id, item_id, fields):
+            raise HTTPException(status_code=404, detail="no such evidence item")
+        return {"ok": True, "case": await asyncio.to_thread(db.get_case, case_id)}
+
     @app.delete("/api/cases/{case_id}/items/{item_id}")
     async def remove_case_item_ep(case_id: int, item_id: int, request: Request):
         user = require_settings(request)
@@ -1561,14 +1520,21 @@ def create_app(cfg: Config) -> FastAPI:
             raise HTTPException(status_code=404, detail="no such case")
         return {"ok": True, "case": await asyncio.to_thread(db.get_case, case_id)}
 
+    def _case_pdf(case: dict) -> bytes:
+        # blocking (sqlite read + render) — call via to_thread.
+        site = db.get_setting("site_name", cfg.site_name) or "Squelch"
+        return pdfreport.render_case_pdf(case, site)
+
     @app.get("/api/cases/{case_id}/export")
     async def export_case_ep(case_id: int, request: Request):
         require_settings(request)
         case = await asyncio.to_thread(db.get_case, case_id)
         if not case:
             raise HTTPException(status_code=404, detail="no such case")
-        site = db.get_setting("site_name", cfg.site_name) or "Squelch"
-        return HTMLResponse(_render_case_report(case, site))
+        pdf = await asyncio.to_thread(_case_pdf, case)
+        return Response(pdf, media_type="application/pdf", headers={
+            "Content-Disposition":
+                f'inline; filename="case_{case["number"]}_report.pdf"'})
 
     @app.get("/api/cases/{case_id}/export.zip")
     async def export_case_zip_ep(case_id: int, request: Request):
@@ -1576,7 +1542,6 @@ def create_app(cfg: Config) -> FastAPI:
         case = await asyncio.to_thread(db.get_case, case_id)
         if not case:
             raise HTTPException(status_code=404, detail="no such case")
-        site = db.get_setting("site_name", cfg.site_name) or "Squelch"
 
         def build(path: str) -> None:
             # the report + every attached recording still on disk, one zip.
@@ -1584,8 +1549,8 @@ def create_app(cfg: Config) -> FastAPI:
             # heavily-evidenced case can't spike RAM.
             import zipfile
             with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-                z.writestr(f"case_{case['number']}_report.html",
-                           _render_case_report(case, site))
+                z.writestr(f"case_{case['number']}_report.pdf",
+                           _case_pdf(case))
                 for it in case["items"]:
                     if not it.get("has_audio"):
                         continue

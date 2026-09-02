@@ -210,6 +210,10 @@ export const api = {
   removeCaseItem: (id: number, item_id: number) =>
     del<{ ok: boolean; case: import("./types").CaseDetail }>(
       `/api/cases/${id}/items/${item_id}`),
+  updateCaseItem: (id: number, item_id: number,
+                   body: { label?: string; note?: string }) =>
+    patch<{ ok: boolean; case: import("./types").CaseDetail }>(
+      `/api/cases/${id}/items/${item_id}`, body),
   addCaseNote: (id: number, text: string) =>
     post<{ ok: boolean; case: import("./types").CaseDetail }>(
       `/api/cases/${id}/notes`, { text }),

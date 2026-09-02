@@ -70,7 +70,8 @@ class Pipeline:
         self.storm = StormGate(
             enabled=cfg.storm_enabled, window_secs=cfg.storm_window_secs,
             on_duty=cfg.storm_on_duty, off_duty=cfg.storm_off_duty,
-            on_rate_per_min=cfg.storm_on_rate_per_min)
+            on_rate_per_min=cfg.storm_on_rate_per_min,
+            off_rate_per_min=cfg.storm_off_rate_per_min)
         self.speaker_id = SpeakerIdentifier(
             db, match_threshold=cfg.match_threshold,
             autocluster=cfg.autocluster,

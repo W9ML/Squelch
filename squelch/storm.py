@@ -2,22 +2,27 @@
 
 An intermod/stuck-carrier event shows up as a machine-gun run of keyups —
 measured on a real event: 74 keyups in 95 s, the repeater keyed 78% of the
-time, median gap 0.1 s. Human traffic never looks like that: a busy net is
-1-7% duty at ~1 keyup/min, and even a five-minute ragchew is ONE keyup, not
-fifty. Acoustics can't separate the two (webrtcvad scores intermod noise just
-like speech), but the CADENCE is unmistakable, so the gate triggers only when
-BOTH hold over a rolling window:
+time, median gap 0.1 s. A net can key the repeater just as much of the time
+(a directed check-in net runs 80%+ duty), so DUTY ALONE can't separate them —
+but the keyup RATE can: intermod machine-guns dozens of keyups a minute, while
+a busy net keys only a handful (even a five-minute ragchew is ONE keyup, not
+fifty). Acoustics don't help (webrtcvad scores intermod noise just like
+speech), so the gate keys off cadence and triggers only when BOTH hold over a
+rolling window:
 
   - duty cycle (keyed fraction of the window) >= on_duty, AND
   - keyup rate >= on_rate_per_min.
 
 The rate condition is what spares the long-winded operator: a single 4-minute
-over is ~100% duty but ~0.3 keyups/min. The duty condition spares a snappy
-net: many short overs but mostly idle. During a storm, transmissions are
+over is ~100% duty but ~0.3 keyups/min. During a storm, transmissions are
 still stored (audio, waveform, MDC) — only the ML stages (whisper + voice ID)
 are skipped, so the GPU idles instead of chewing minutes of noise, and the
-feed doesn't fill with garbage. Exit uses a lower duty threshold (hysteresis)
-so the gate can't flap at the boundary.
+feed doesn't fill with garbage. EXIT tests the rate too, not just duty: the
+gate stays up only while duty AND rate both stay above the lower off_
+thresholds (hysteresis). Checking duty alone would latch the gate for an
+entire high-duty net once its opening check-in flurry tripped it (the real
+2026-09-02 failure); now the gate releases the moment the cadence drops back
+to net-like, even mid-net.
 """
 from __future__ import annotations
 
@@ -28,12 +33,13 @@ from collections import deque
 class StormGate:
     def __init__(self, enabled: bool = True, window_secs: float = 90.0,
                  on_duty: float = 0.45, off_duty: float = 0.20,
-                 on_rate_per_min: float = 12.0):
+                 on_rate_per_min: float = 20.0, off_rate_per_min: float = 10.0):
         self.enabled = enabled
         self.window = float(window_secs)
         self.on_duty = float(on_duty)
         self.off_duty = float(off_duty)
         self.on_rate = float(on_rate_per_min)
+        self.off_rate = float(off_rate_per_min)
         self.active = False
         self._keyups: deque[tuple[float, float]] = deque()
 
@@ -81,7 +87,11 @@ class StormGate:
             return changed
         enter_duty, window_duty, rate = self.stats(now)
         if self.active:
-            new = window_duty > self.off_duty
+            # stay up only while BOTH stay elevated — a real storm sustains a
+            # high keyup rate; a busy net's rate drops back after its opening
+            # flurry even though duty stays high. Checking duty alone latched
+            # the gate for a whole net once a burst tripped it.
+            new = window_duty > self.off_duty and rate > self.off_rate
         else:
             new = enter_duty >= self.on_duty and rate >= self.on_rate
         changed = new != self.active

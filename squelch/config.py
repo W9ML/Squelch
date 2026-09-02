@@ -189,13 +189,15 @@ class Config:
     # [storm] — stuck-repeater gate: when the repeater is keyed most of a
     # rolling window AND re-keying at a machine-gun rate (an intermod loop,
     # never a human), pause transcription + voice ID until it clears. Audio is
-    # still stored. Both conditions must hold, so neither a long ragchew (one
-    # keyup) nor a snappy net (low duty) can trip it.
+    # still stored. Both duty AND rate must hold to TRIP and to STAY tripped,
+    # so neither a long ragchew (one keyup) nor a busy net (high duty but a
+    # slow keyup rate) can trip it — or latch it once an opening flurry does.
     storm_enabled: bool = True
     storm_window_secs: float = 90.0
     storm_on_duty: float = 0.45
     storm_off_duty: float = 0.20
-    storm_on_rate_per_min: float = 12.0
+    storm_on_rate_per_min: float = 20.0
+    storm_off_rate_per_min: float = 10.0
 
     # [elevenlabs] — optional ON-DEMAND cloud "second opinion" reprocess. Admin
     # per-over action only; the live pipeline stays fully local. The API key is
@@ -351,6 +353,8 @@ def load_config(path: str | Path) -> Config:
     cfg.storm_off_duty = float(st.get("off_duty", cfg.storm_off_duty))
     cfg.storm_on_rate_per_min = float(
         st.get("on_rate_per_min", cfg.storm_on_rate_per_min))
+    cfg.storm_off_rate_per_min = float(
+        st.get("off_rate_per_min", cfg.storm_off_rate_per_min))
 
     el = raw.get("elevenlabs", {})
     cfg.elevenlabs_enabled = bool(el.get("enabled", cfg.elevenlabs_enabled))

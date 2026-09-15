@@ -81,7 +81,10 @@ CONTENT_SECURITY_POLICY = (
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "font-src 'self' https://fonts.gstatic.com; "
     "img-src 'self' data: blob: "
-    "https://*.basemaps.cartocdn.com "
+    # geo/voter localization map basemap tiles — Esri "Dark Gray Canvas"
+    # (keyless; replaced CARTO's basemaps.cartocdn.com, which began requiring
+    # an API key). MUST match the tile host used in web/src/components/GeoMap.tsx.
+    "https://server.arcgisonline.com "
     # QRZ profile photos (hosted on qrz.com CDNs and their S3 bucket)
     "https://*.qrz.com https://s3.amazonaws.com; "
     "connect-src 'self'; "

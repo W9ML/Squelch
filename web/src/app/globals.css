@@ -1435,6 +1435,14 @@ canvas.wave { flex: 1; height: 38px; min-width: 0; cursor: pointer; display: blo
   display: flex;
   flex-direction: column;
 }
+/* On a phone the Chakra content box fills the viewport edge-to-edge (its width
+   is 100% of a full-width container, margins 0), so the rounded card + its
+   border/shadow run off both edges. Cap it below the viewport to leave a gutter;
+   the centered container then shows equal margins. `!important` beats Chakra's
+   inline maxW, and the query only fires on phones so desktop keeps 520/760px. */
+@media (max-width: 600px) {
+  .sq-modal { max-width: calc(100vw - 2rem) !important; }
+}
 /* long dialogs scroll INSIDE the card; title, X and actions stay put */
 .sq-modal-body { overflow-y: auto; min-height: 0; flex: 1; padding-right: 2px; }
 .sq-close {

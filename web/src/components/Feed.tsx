@@ -761,6 +761,14 @@ export function Feed() {
     });
   };
 
+  // file the whole selection as evidence under a case (new or existing). The
+  // modal takes a snapshot of the chosen recordings; selection is left intact
+  // so a cancel doesn't lose it (Cases is super/admin only, so gate on it).
+  const bulkAddToCase = () => {
+    const txs = rows.filter((r) => selected.has(r.id));
+    if (txs.length) openModal({ kind: "addToCase", txs });
+  };
+
   const jumpDate = filters.until ? epochToDateInput(Number(filters.until) - 1) : "";
 
   return (
@@ -818,6 +826,11 @@ export function Feed() {
       {isAdmin && selected.size > 0 && (
         <div className="bulk-bar">
           <span className="bulk-count">{selected.size} selected</span>
+          {status?.can_settings && (
+            <button className="text-btn" onClick={bulkAddToCase}>
+              Add to case
+            </button>
+          )}
           <button className="text-btn danger" onClick={bulkDelete}>
             Delete selected
           </button>

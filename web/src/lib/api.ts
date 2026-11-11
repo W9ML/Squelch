@@ -207,6 +207,10 @@ export const api = {
   addCaseItem: (id: number, tx_id: number, label = "", note = "") =>
     post<{ ok: boolean; already: boolean; case: import("./types").CaseDetail }>(
       `/api/cases/${id}/items`, { tx_id, label, note }),
+  addCaseItemsBulk: (id: number, tx_ids: number[], label = "", note = "") =>
+    post<{ ok: boolean; added: number; already: number; missing: number;
+           case: import("./types").CaseDetail }>(
+      `/api/cases/${id}/items/bulk`, { tx_ids, label, note }),
   removeCaseItem: (id: number, item_id: number) =>
     del<{ ok: boolean; case: import("./types").CaseDetail }>(
       `/api/cases/${id}/items/${item_id}`),

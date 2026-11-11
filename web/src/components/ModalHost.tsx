@@ -44,7 +44,7 @@ export function ModalHost() {
     case "cases":
       return <CasesModal />;
     case "addToCase":
-      return <AddToCaseModal tx={modal.tx} />;
+      return <AddToCaseModal txs={modal.txs} />;
     case "logbook":
       return <LogbookModal />;
     case "connlog":

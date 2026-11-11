@@ -206,6 +206,18 @@ class Config:
     elevenlabs_model: str = "scribe_v2"
     elevenlabs_language: str = "eng"       # ISO-639-3; "" = auto-detect
 
+    # [mqtt] — publish finished overs to a broker (e.g. Home Assistant).
+    # The password comes from SQUELCH_MQTT_PASSWORD, never this file.
+    mqtt_enabled: bool = False
+    mqtt_host: str = ""
+    mqtt_port: int = 1883
+    mqtt_username: str = ""
+    mqtt_tls: bool = False
+    mqtt_topic_prefix: str = "squelch"
+    mqtt_discovery: bool = True
+    mqtt_discovery_prefix: str = "homeassistant"
+    mqtt_base_url: str = ""                # site URL for ?tx= permalinks
+
     # [web]
     web_bind: str = "0.0.0.0"
     web_port: int = 8080
@@ -360,6 +372,18 @@ def load_config(path: str | Path) -> Config:
     cfg.elevenlabs_enabled = bool(el.get("enabled", cfg.elevenlabs_enabled))
     cfg.elevenlabs_model = el.get("model", cfg.elevenlabs_model)
     cfg.elevenlabs_language = el.get("language", cfg.elevenlabs_language)
+
+    mq = raw.get("mqtt", {})
+    cfg.mqtt_enabled = bool(mq.get("enabled", cfg.mqtt_enabled))
+    cfg.mqtt_host = str(mq.get("host", cfg.mqtt_host))
+    cfg.mqtt_port = int(mq.get("port", cfg.mqtt_port))
+    cfg.mqtt_username = str(mq.get("username", cfg.mqtt_username))
+    cfg.mqtt_tls = bool(mq.get("tls", cfg.mqtt_tls))
+    cfg.mqtt_topic_prefix = str(mq.get("topic_prefix", cfg.mqtt_topic_prefix))
+    cfg.mqtt_discovery = bool(mq.get("discovery", cfg.mqtt_discovery))
+    cfg.mqtt_discovery_prefix = str(
+        mq.get("discovery_prefix", cfg.mqtt_discovery_prefix))
+    cfg.mqtt_base_url = str(mq.get("base_url", cfg.mqtt_base_url))
 
     web = raw.get("web", {})
     cfg.web_bind = web.get("bind", cfg.web_bind)

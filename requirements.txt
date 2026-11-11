@@ -13,6 +13,10 @@ requests>=2.31
 # squelch runs fine without it — push is just disabled. Pulls py-vapid + http-ece.
 pywebpush>=1.14
 
+# MQTT publishing ([mqtt], e.g. to Home Assistant). Optional: off by default,
+# and squelch runs fine without it.
+paho-mqtt>=2.0
+
 # transcription (faster-whisper pulls in ctranslate2; CPU-only, no GPU needed)
 faster-whisper>=1.0
 

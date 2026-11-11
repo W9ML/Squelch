@@ -24,8 +24,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from . import (__version__, elevenlabs_stt, geo, pdfreport, qrz, tabexport,
-               usrp, watchdog, webpush)
+from . import (__version__, elevenlabs_stt, geo, mqtt, pdfreport, qrz,
+               tabexport, usrp, watchdog, webpush)
 from .auth import SESSION_COOKIE, SESSION_TTL, AuthManager
 from .callsigns import CALL_RE
 from .config import Config, WHISPER_MODELS
@@ -440,6 +440,12 @@ class CaseItemBody(BaseModel):
     note: str = Field("", max_length=20000)
 
 
+class BulkCaseItemsBody(BaseModel):
+    tx_ids: list[int] = Field(..., min_length=1, max_length=2000)
+    label: str = Field("", max_length=300)
+    note: str = Field("", max_length=20000)
+
+
 class CaseItemPatch(BaseModel):
     label: str | None = Field(None, max_length=300)
     note: str | None = Field(None, max_length=20000)
@@ -561,6 +567,10 @@ def create_app(cfg: Config) -> FastAPI:
         transport = await usrp.start_listener(
             cfg.usrp_bind, cfg.usrp_port, segmenter)
         pipeline.voter.start()
+        if cfg.mqtt_enabled:
+            publisher = mqtt.MqttPublisher(cfg)
+            if publisher.start():
+                pipeline.mqtt = publisher
         # warm the whisper model now (background) so the first
         # transmission after a restart doesn't hit a cold model
         if cfg.transcribe_enabled and pipeline.transcriber.available:
@@ -592,6 +602,8 @@ def create_app(cfg: Config) -> FastAPI:
                  cfg.usrp_bind, cfg.usrp_port)
         yield
         pipeline.voter.stop()
+        if pipeline.mqtt is not None:
+            pipeline.mqtt.stop()
         transport.close()
         for t in tasks:
             t.cancel()
@@ -1495,6 +1507,17 @@ def create_app(cfg: Config) -> FastAPI:
             raise HTTPException(status_code=404,
                                 detail="no such case or transmission")
         return {"ok": True, "already": r == 0,
+                "case": await asyncio.to_thread(db.get_case, case_id)}
+
+    @app.post("/api/cases/{case_id}/items/bulk")
+    async def add_case_items_ep(case_id: int, body: BulkCaseItemsBody,
+                                request: Request):
+        user = require_settings(request)
+        r = await asyncio.to_thread(db.add_case_items, case_id, body.tx_ids,
+                                    body.label.strip(), body.note.strip(), user)
+        if r is None:
+            raise HTTPException(status_code=404, detail="no such case")
+        return {"ok": True, **r,
                 "case": await asyncio.to_thread(db.get_case, case_id)}
 
     @app.patch("/api/cases/{case_id}/items/{item_id}")

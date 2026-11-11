@@ -45,8 +45,26 @@ _SIGNOFF_RE = re.compile(
     re.IGNORECASE)
 
 
+# net-control language: "net control", "taking check-ins", "this is the <name>
+# net", "the net is now open". Used only as a published hint (mqtt.py) — never
+# to change QSO boundaries or attribution. A bare "check in" is NOT a cue: on a
+# real month of hub audio it was mostly ragchew ("I'll check in with you").
+_NET_RE = re.compile(
+    r"\bnet\s+control\b|"
+    r"\b(?:taking|any|more|late|short[\s-]?time|final|additional|further|first"
+    r"|regular|for)\s+check[\s-]?ins\b|"
+    r"\b(?:this\s+is|welcome\s+to)\s+the\s+(?:[\w'-]+\s+){0,5}net\b|"
+    r"\bnet\s+is\s+(?:now\s+)?(?:open|in\s+session|called\s+to\s+order)\b|"
+    r"\b(?:calling|opening|open)\s+the\s+net\b|\bnet\s+(?:manager|log|traffic)\b",
+    re.IGNORECASE)
+
+
 def is_directed_call(transcript: str | None) -> bool:
     return bool(transcript and _DIRECTED_RE.search(transcript))
+
+
+def is_net_cue(transcript: str | None) -> bool:
+    return bool(transcript and _NET_RE.search(transcript))
 
 
 def is_signoff(transcript: str | None) -> bool:

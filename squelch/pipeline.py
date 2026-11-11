@@ -107,6 +107,8 @@ class Pipeline:
         # speaker DB. In-memory state, driven from this single worker one tx at
         # a time (see qso.py); None when disabled.
         self.qso: QsoTracker | None = None
+        # MQTT publisher (mqtt.py), attached by create_app when [mqtt] is on
+        self.mqtt = None
         if cfg.qso_enabled:
             self.qso = QsoTracker(QsoConfig(
                 enabled=True,
@@ -459,6 +461,25 @@ class Pipeline:
             self.db.update_transmission, tx_id, status="done")
         await self._push_update(tx_id)
         await self._run_watchlist(tx_id)
+        if live:
+            await self._publish_mqtt(tx_id)
+
+    async def _publish_mqtt(self, tx_id: int) -> None:
+        """Hand the finished over to the MQTT publisher (Home Assistant etc.).
+        Live overs only — an admin reprocess must not re-announce old traffic."""
+        if self.mqtt is None:
+            return
+        try:
+            record = await asyncio.to_thread(self.db.get_transmission, tx_id)
+            if not record:
+                return
+            qso_size = 0
+            if self.qso is not None and self.qso.current is not None:
+                heard = record.get("ended_at") or record.get("started_at") or 0
+                qso_size = len(self.qso.active_participants(heard))
+            self.mqtt.publish_transmission(record, qso_size)
+        except Exception:
+            log.exception("mqtt publish failed for tx %d", tx_id)
 
     async def _run_watchlist(self, tx_id: int) -> None:
         try:

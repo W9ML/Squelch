@@ -6,10 +6,12 @@ import type { CaseSummary, Transmission } from "@/lib/types";
 import { useApp } from "@/state/app-context";
 import { SqModal } from "./SqModal";
 
-/** File a single transmission as evidence under a case (or open a new one).
- *  Reached from the ⋯ menu on a transmission card; super/admin only. */
-export function AddToCaseModal({ tx }: { tx: Transmission }) {
+/** File one or more transmissions as evidence under a case (or open a new one).
+ *  Single-recording: the ⋯ menu on a card. Many: the feed's multi-select bar.
+ *  Super/admin only. */
+export function AddToCaseModal({ txs }: { txs: Transmission[] }) {
   const { closeModal } = useApp();
+  const single = txs.length === 1 ? txs[0] : null;
   const [cases, setCases] = useState<CaseSummary[] | null>(null);
   const [sel, setSel] = useState<number | "new">("new");
   const [newTitle, setNewTitle] = useState("");
@@ -28,8 +30,8 @@ export function AddToCaseModal({ tx }: { tx: Transmission }) {
       setCases(d.cases);
       setSel(d.cases.length ? d.cases[0].id : "new");
     }).catch((e) => { setCases([]); setErr((e as Error).message); });   // still allow "new"
-    api.txCases(tx.id).then((d) => setFiled(d.cases)).catch(() => {});
-  }, [tx.id]);
+    if (single) api.txCases(single.id).then((d) => setFiled(d.cases)).catch(() => {});
+  }, [single]);
 
   const submit = async () => {
     setErr(""); setBusy(true);
@@ -49,15 +51,26 @@ export function AddToCaseModal({ tx }: { tx: Transmission }) {
         caseId = sel;
         number = cases?.find((c) => c.id === sel)?.number || "";
       }
-      const r = await api.addCaseItem(caseId, tx.id, label.trim(), note.trim());
-      setDone(r.already ? `Already filed under case ${number}.` : `Added to case ${number}.`);
+      if (single) {
+        const r = await api.addCaseItem(caseId, single.id, label.trim(), note.trim());
+        setDone(r.already ? `Already filed under case ${number}.` : `Added to case ${number}.`);
+      } else {
+        const r = await api.addCaseItemsBulk(
+          caseId, txs.map((t) => t.id), label.trim(), note.trim());
+        const bits = [`Added ${r.added} to case ${number}`];
+        if (r.already) bits.push(`${r.already} already filed`);
+        if (r.missing) bits.push(`${r.missing} no longer available`);
+        setDone(bits.join(" · ") + ".");
+      }
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
   };
 
+  const verb = single ? "Add to case" : `Add ${txs.length} to case`;
+
   return (
     <SqModal
-      title="Add recording to a case"
+      title={single ? "Add recording to a case" : `Add ${txs.length} recordings to a case`}
       onClose={closeModal}
       footer={
         done ? (
@@ -66,17 +79,21 @@ export function AddToCaseModal({ tx }: { tx: Transmission }) {
           <>
             <button className="text-btn" onClick={closeModal}>Cancel</button>
             <button className="text-btn primary" disabled={busy || cases === null} onClick={submit}>
-              {busy ? "Filing…" : "Add to case"}
+              {busy ? "Filing…" : verb}
             </button>
           </>
         )
       }
     >
-      <div className="atc-tx">
-        tx {tx.id} · {new Date(tx.started_at * 1000).toLocaleString()} ·{" "}
-        {Math.round((tx.duration_ms || 0) / 1000)}s
-        {tx.origin ? ` · from ${tx.origin}` : ""}
-      </div>
+      {single ? (
+        <div className="atc-tx">
+          tx {single.id} · {new Date(single.started_at * 1000).toLocaleString()} ·{" "}
+          {Math.round((single.duration_ms || 0) / 1000)}s
+          {single.origin ? ` · from ${single.origin}` : ""}
+        </div>
+      ) : (
+        <div className="atc-tx">{txs.length} recordings selected</div>
+      )}
 
       {filed.length ? (
         <div className="atc-filed">

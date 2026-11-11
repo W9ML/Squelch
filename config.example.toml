@@ -192,6 +192,27 @@ language = "eng"
 # file (it's a live credential). e.g. add to the systemd unit:
 #   Environment=ELEVENLABS_API_KEY=sk_...
 
+[mqtt]
+# Publish every finished over to an MQTT broker — e.g. Home Assistant's
+# Mosquitto, for "W9XYZ just came up" or "net started" phone alerts. Off by
+# default. Needs paho-mqtt (in requirements.txt).
+enabled = false
+host = ""                       # e.g. "192.168.1.10"
+port = 1883
+username = ""
+# The password is read from the SQUELCH_MQTT_PASSWORD environment variable,
+# NOT this file (it's a live credential). e.g. a systemd drop-in:
+#   Environment=SQUELCH_MQTT_PASSWORD=...
+tls = false
+# messages go to <topic_prefix>/transmission (JSON) and <topic_prefix>/status
+topic_prefix = "squelch"
+# Home Assistant MQTT discovery: a "Squelch" device with Online + Last
+# transmission sensors appears automatically
+discovery = true
+discovery_prefix = "homeassistant"
+# your site's public URL, so each message carries a ?tx= permalink
+base_url = ""
+
 [web]
 bind = "0.0.0.0"
 port = 8080

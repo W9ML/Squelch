@@ -1624,6 +1624,43 @@ class Database:
                 (case_id, now, actor, f"Evidence added: tx {tx_id}{lbl}"))
             return cur.lastrowid
 
+    def add_case_items(self, case_id: int, tx_ids: list[int], label: str = "",
+                       note: str = "", actor: str = "") -> dict | None:
+        """Bulk-attach recordings as evidence in one transaction, with a single
+        activity-log entry for the batch (vs. one per recording). Skips ones
+        already filed and ones whose transmission is gone. Returns
+        {added, already, missing}, or None if the case doesn't exist."""
+        now = time.time()
+        with self._lock, self._conn:
+            if not self._conn.execute("SELECT 1 FROM cases WHERE id=?",
+                                      (case_id,)).fetchone():
+                return None
+            added = already = missing = 0
+            for tx_id in tx_ids:
+                if not self._conn.execute("SELECT 1 FROM transmissions WHERE id=?",
+                                          (tx_id,)).fetchone():
+                    missing += 1
+                    continue
+                try:
+                    self._conn.execute(
+                        "INSERT INTO case_items (case_id,tx_id,label,note,added_at,added_by)"
+                        " VALUES (?,?,?,?,?,?)",
+                        (case_id, tx_id, label, note, now, actor))
+                    added += 1
+                except sqlite3.IntegrityError:
+                    already += 1               # already attached (UNIQUE case_id,tx_id)
+            if added:
+                self._conn.execute("UPDATE cases SET updated_at=? WHERE id=?",
+                                   (now, case_id))
+                extra = f" ({already} already filed)" if already else ""
+                self._conn.execute(
+                    "INSERT INTO case_notes (case_id,ts,author,kind,text)"
+                    " VALUES (?,?,?,'system',?)",
+                    (case_id, now, actor,
+                     f"Evidence added: {added} recording"
+                     f"{'' if added == 1 else 's'}{extra}"))
+        return {"added": added, "already": already, "missing": missing}
+
     def remove_case_item(self, case_id: int, item_id: int,
                          actor: str = "") -> bool:
         now = time.time()

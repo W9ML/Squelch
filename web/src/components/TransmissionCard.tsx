@@ -547,7 +547,7 @@ export function TransmissionCard({
                           role="menuitem"
                           onClick={() => {
                             setMenuOpen(false);
-                            openModal({ kind: "addToCase", tx });
+                            openModal({ kind: "addToCase", txs: [tx] });
                           }}
                         >
                           <FontAwesomeIcon icon={ICONS.addCase} /> Add to case

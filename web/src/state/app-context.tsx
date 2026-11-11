@@ -50,7 +50,7 @@ export type Modal =
   | { kind: "connlog" }
   | { kind: "network" }
   | { kind: "cases" }
-  | { kind: "addToCase"; txs: Transmission[] }
+  | { kind: "addToCase"; txs: Transmission[]; onFiled?: () => void }
   | { kind: "timemachine" }
   | {
       kind: "confirm";

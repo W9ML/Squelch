@@ -9,7 +9,10 @@ import { SqModal } from "./SqModal";
 /** File one or more transmissions as evidence under a case (or open a new one).
  *  Single-recording: the ⋯ menu on a card. Many: the feed's multi-select bar.
  *  Super/admin only. */
-export function AddToCaseModal({ txs }: { txs: Transmission[] }) {
+export function AddToCaseModal({ txs, onFiled }: {
+  txs: Transmission[];
+  onFiled?: () => void;   // called once the add succeeds (feed uses it to clear the selection)
+}) {
   const { closeModal } = useApp();
   const single = txs.length === 1 ? txs[0] : null;
   const [cases, setCases] = useState<CaseSummary[] | null>(null);
@@ -62,6 +65,7 @@ export function AddToCaseModal({ txs }: { txs: Transmission[] }) {
         if (r.missing) bits.push(`${r.missing} no longer available`);
         setDone(bits.join(" · ") + ".");
       }
+      onFiled?.();   // success — let the feed clear its selection
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
   };

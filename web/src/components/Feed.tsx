@@ -762,11 +762,14 @@ export function Feed() {
   };
 
   // file the whole selection as evidence under a case (new or existing). The
-  // modal takes a snapshot of the chosen recordings; selection is left intact
-  // so a cancel doesn't lose it (Cases is super/admin only, so gate on it).
+  // modal takes a snapshot of the chosen recordings and clears the selection
+  // only once the add succeeds (onFiled) — a cancel leaves it intact. Cases is
+  // super/admin only, so the button is gated on can_settings.
   const bulkAddToCase = () => {
     const txs = rows.filter((r) => selected.has(r.id));
-    if (txs.length) openModal({ kind: "addToCase", txs });
+    if (txs.length) {
+      openModal({ kind: "addToCase", txs, onFiled: () => setSelected(new Set()) });
+    }
   };
 
   const jumpDate = filters.until ? epochToDateInput(Number(filters.until) - 1) : "";

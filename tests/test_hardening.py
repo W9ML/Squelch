@@ -506,6 +506,14 @@ def test_usrp_allow_from_drops_other_senders():
     assert open_seg.frames == 1
 
 
+def test_installer_is_executable():
+    # the README says `sudo ./install.sh`; that only works with the bit set
+    import os
+    import sys
+    if sys.platform != "win32":
+        assert os.access(ROOT / "install.sh", os.X_OK)
+
+
 def test_version_is_reported_and_real(tmp_path):
     from squelch import __version__
     assert tuple(int(p) for p in __version__.split(".")) >= (2, 0, 0)

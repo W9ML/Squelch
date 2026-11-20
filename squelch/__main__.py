@@ -29,6 +29,11 @@ def main() -> int:
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if not args.verbose:
+        # the model downloader logs every HTTP request at INFO — dozens of
+        # lines per start that bury the ones an operator needs to see
+        for noisy in ("httpx", "httpx2", "httpcore", "huggingface_hub"):
+            logging.getLogger(noisy).setLevel(logging.ERROR)
 
     cfg_path = Path(args.config)
     if not cfg_path.exists():

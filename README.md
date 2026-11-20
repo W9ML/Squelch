@@ -73,7 +73,8 @@ it can hear the repeater but can never key it up.
 ## Install (on the VM)
 
 ```sh
-git clone <this repo> squelch && cd squelch     # or copy the folder over
+sudo apt install -y git
+git clone https://github.com/W9ML/Squelch squelch && cd squelch
 sudo ./install.sh
 sudo nano /etc/squelch/squelch.toml             # node number, callsign
 sudo systemctl start squelch
@@ -397,8 +398,8 @@ anywhere else. Report vulnerabilities per [SECURITY.md](SECURITY.md).
 4. **Two-factor.** Each account can enrol an authenticator app from Settings.
    Set `require_2fa = true` to make it mandatory for everyone. A super admin
    can reset a lost authenticator from Users; if the only super admin is locked
-   out, run `sudo -u squelch /opt/squelch/venv/bin/python -m squelch --reset-2fa <username>`
-   on the server.
+   out, run this on the server (no restart needed):
+   `sudo -u squelch sh -c 'cd /opt/squelch/app && /opt/squelch/venv/bin/python -m squelch --reset-2fa <username>'`
 5. **Lock down the audio port.** UDP 32001 accepts audio from any sender that
    can reach it. Set `[usrp] allow_from = ["<node-ip>"]`, and/or firewall the
    port to the node.

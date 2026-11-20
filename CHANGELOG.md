@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.1
+
+Found by installing 2.0.0 on a clean Debian 13 machine, start to finish.
+
+- `install.sh` is now executable, so the documented `sudo ./install.sh` works
+  (it had to be run as `sudo bash ./install.sh`).
+- The two-factor recovery command in the README now runs from the application
+  directory; as printed for 2.0.0 it failed with "No module named squelch".
+- The service log no longer fills with one line per model-download HTTP
+  request at every start.
+- README: the install steps name the repository and the `git` prerequisite.
+
 ## 2.0.0 — security hardening
 
 A security release. It tightens the defaults, adds the access controls a

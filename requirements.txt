@@ -1,25 +1,36 @@
+# Squelch — direct dependencies, held to the release lines that were tested.
+#
+# install.sh installs the exact, hash-checked versions in requirements.lock
+# (generated from this file; see the header there). This file is the source
+# of truth for WHAT is depended on; the lock records exactly WHICH build.
+# Dependabot opens a pull request when a pinned version has a security fix.
+
 # core
-fastapi>=0.110
-uvicorn[standard]>=0.29
-python-multipart>=0.0.9
-cryptography>=42.0
-numpy>=1.26
-scipy>=1.11
+fastapi~=0.165.0
+uvicorn[standard]~=0.54.0
+python-multipart~=0.0.34
+cryptography>=50.0.2,<51
+numpy>=2.0,<3
+scipy>=1.14,<2
 # voter SSE streaming (VoterCollector). Only needed when [voter] sources are
 # configured, but declared so a fresh install doesn't crash on import.
-requests>=2.31
+requests~=2.34
 
 # web push (VAPID) for phone/desktop alerts when the app is closed. Optional:
 # squelch runs fine without it — push is just disabled. Pulls py-vapid + http-ece.
-pywebpush>=1.14
+pywebpush~=2.5
 
 # MQTT publishing ([mqtt], e.g. to Home Assistant). Optional: off by default,
 # and squelch runs fine without it.
-paho-mqtt>=2.0
+paho-mqtt~=2.2
 
 # transcription (faster-whisper pulls in ctranslate2; CPU-only, no GPU needed)
-faster-whisper>=1.0
+faster-whisper~=1.2
 
 # speaker identification (pulls in torch CPU + librosa; the largest install.
 # squelch runs fine without it — voice ID is just disabled.)
 resemblyzer>=0.1.3
+# resemblyzer still lists the long-obsolete "typing" backport. Its newest
+# uploads declare Python < 3.5, so a resolver can pick one pip then refuses;
+# hold it at the last build that installs (the stdlib module is what runs).
+typing==3.7.4.3

@@ -11,7 +11,7 @@ import { GeoMap } from "./GeoMap";
  *  status), plus the admin-only approximate-location map. Ported from the
  *  original buildVoterPanel. */
 export function VoterPanel({ tx, bus }: { tx: Transmission; bus: EventTarget }) {
-  const { status, isAdmin } = useApp();
+  const { status, loggedIn } = useApp();
   const [open, setOpen] = useState(false);
   const [geoOpen, setGeoOpen] = useState(false);
   const nodes = tx.voter?.nodes ?? [];
@@ -125,7 +125,7 @@ export function VoterPanel({ tx, bus }: { tx: Transmission; bus: EventTarget }) 
         </div>
       )}
 
-      {status?.has_geo && isAdmin && (
+      {status?.has_geo && loggedIn && (
         <>
           <button className="voter-toggle geo-toggle" onClick={() => setGeoOpen((o) => !o)}>
             <FontAwesomeIcon icon={ICONS.map} /> Approx. location

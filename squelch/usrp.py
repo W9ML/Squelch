@@ -22,6 +22,7 @@ a configurable gap with no audio.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import struct
 import time
@@ -212,18 +213,48 @@ class Segmenter:
 
 
 class USRPProtocol(asyncio.DatagramProtocol):
-    def __init__(self, segmenter: Segmenter):
+    def __init__(self, segmenter: Segmenter, allow_from=None):
         self.segmenter = segmenter
+        # [usrp] allow_from: IPs / CIDRs whose frames are accepted; empty =
+        # anyone who can reach the port
+        self.allow_from = []
+        for entry in allow_from or ():
+            try:
+                self.allow_from.append(
+                    ipaddress.ip_network(str(entry).strip(), strict=False))
+            except ValueError:
+                log.error("ignoring bad [usrp] allow_from entry: %r", entry)
+        self.dropped = 0
+
+    def _allowed(self, host: str) -> bool:
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        if ip.version == 6 and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        return any(ip in net for net in self.allow_from)
 
     def datagram_received(self, data: bytes, addr) -> None:
+        if self.allow_from and not self._allowed(addr[0]):
+            self.dropped += 1
+            if self.dropped == 1 or self.dropped % 5000 == 0:
+                log.warning("dropping USRP frames from %s — not in [usrp] "
+                            "allow_from (%d dropped)", addr[0], self.dropped)
+            return
         frame = parse_frame(data)
         if frame is not None:
             self.segmenter.feed(frame)
 
 
-async def start_listener(bind: str, port: int, segmenter: Segmenter):
+async def start_listener(bind: str, port: int, segmenter: Segmenter,
+                         allow_from=None):
     loop = asyncio.get_running_loop()
     transport, _protocol = await loop.create_datagram_endpoint(
-        lambda: USRPProtocol(segmenter), local_addr=(bind, port))
+        lambda: USRPProtocol(segmenter, allow_from), local_addr=(bind, port))
     log.info("USRP listener on %s:%d", bind, port)
+    if not allow_from and bind not in ("127.0.0.1", "::1", "localhost"):
+        log.warning("USRP audio is accepted from ANY address on %s:%d — set "
+                    "[usrp] allow_from to the node's IP (or firewall the "
+                    "port) so nobody else can inject audio", bind, port)
     return transport

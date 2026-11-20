@@ -1,0 +1,20 @@
+# Dependabot: security + version updates for every dependency set, weekly.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      react:
+        patterns: ["react", "react-dom", "@types/react", "@types/react-dom"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

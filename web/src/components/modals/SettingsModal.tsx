@@ -7,6 +7,7 @@ import { watchLabel } from "@/lib/watch";
 import type { User, Watch } from "@/lib/types";
 import { useApp } from "@/state/app-context";
 import { SqModal } from "./SqModal";
+import { AuditSection, SessionsSection, TwoFactorSection } from "./SecuritySections";
 
 const SWATCH: Record<string, string[]> = {
   night: ["#171923", "#4fd1c5", "#edf2f7"],
@@ -191,8 +192,9 @@ function UsersSection({ me }: { me: string | null }) {
   const [users, setUsers] = useState<User[]>([]);
   const [name, setName] = useState("");
   const [pw, setPw] = useState("");
-  const [role, setRole] = useState("admin");
+  const [role, setRole] = useState("user");
   const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
 
   const load = () => api.users().then(({ users }) => setUsers(users)).catch(() => {});
@@ -208,14 +210,15 @@ function UsersSection({ me }: { me: string | null }) {
           <div className="user-row" key={u.username}>
             <span className="uname">
               {u.username}
-              <span className={"role-badge role-" + (u.role || "admin")}>{u.role || "admin"}</span>
+              <span className={"role-badge role-" + (u.role || "user")}>{u.role || "user"}</span>
+              {u.has_2fa && <span className="role-badge" title="authenticator app enrolled">2FA</span>}
               {u.username === me && <span className="badge-you">you</span>}
             </span>
             {u.username !== me && (
               <span className="user-actions">
                 <select
                   className="role-select"
-                  value={u.role || "admin"}
+                  value={u.role || "user"}
                   onChange={async (e) => {
                     try {
                       await api.setUserRole(u.username, e.target.value);
@@ -251,9 +254,42 @@ function UsersSection({ me }: { me: string | null }) {
                     </button>
                   </span>
                 ) : (
-                  <button className="link-danger" onClick={() => setConfirmDel(u.username)}>
-                    remove
-                  </button>
+                  <>
+                    <button
+                      className="link-muted"
+                      title="End every login this account has open"
+                      onClick={async () => {
+                        try {
+                          const r = await api.revokeUserSessions(u.username);
+                          setNote(`${u.username}: ${r.ended} session(s) signed out`);
+                        } catch (e) {
+                          setErr((e as Error).message);
+                        }
+                      }}
+                    >
+                      sign out
+                    </button>
+                    {u.has_2fa && (
+                      <button
+                        className="link-muted"
+                        title="Lost phone: clear their authenticator so they can enrol again"
+                        onClick={async () => {
+                          try {
+                            await api.resetUser2fa(u.username);
+                            setNote(`${u.username}: two-factor reset`);
+                            load();
+                          } catch (e) {
+                            setErr((e as Error).message);
+                          }
+                        }}
+                      >
+                        reset 2FA
+                      </button>
+                    )}
+                    <button className="link-danger" onClick={() => setConfirmDel(u.username)}>
+                      remove
+                    </button>
+                  </>
                 )}
               </span>
             )}
@@ -263,9 +299,9 @@ function UsersSection({ me }: { me: string | null }) {
       <input type="text" placeholder="new username" value={name} onChange={(e) => setName(e.target.value)} />
       <input type="password" placeholder="password" value={pw} onChange={(e) => setPw(e.target.value)} />
       <select value={role} onChange={(e) => setRole(e.target.value)}>
+        <option value="user">User (view only)</option>
         <option value="admin">Admin</option>
         <option value="super">Super Admin</option>
-        <option value="user">User</option>
       </select>
       <button
         className="text-btn"
@@ -283,13 +319,14 @@ function UsersSection({ me }: { me: string | null }) {
       >
         Add user
       </button>
+      {note && <div className="ok-msg">{note}</div>}
       <div className="err">{err}</div>
     </>
   );
 }
 
 export function SettingsModal() {
-  const { status, canSettings, isAdmin, isSuper, username, refreshStatus, closeModal } = useApp();
+  const { status, canSettings, loggedIn, isSuper, username, refreshStatus, closeModal } = useApp();
   const s = status;
   const fileRef = useRef<HTMLInputElement>(null);
   const [logoErr, setLogoErr] = useState("");
@@ -607,7 +644,7 @@ export function SettingsModal() {
       />
       <input
         type="password"
-        placeholder="new password"
+        placeholder={`new password (at least ${status?.min_password_len ?? 12} characters)`}
         value={newPw}
         onChange={(e) => setNewPw(e.target.value)}
       />
@@ -615,11 +652,15 @@ export function SettingsModal() {
         className="text-btn"
         onClick={async () => {
           try {
-            await api.changePassword(curPw, newPw);
+            const r = await api.changePassword(curPw, newPw);
             setCurPw("");
             setNewPw("");
-            setPwMsg({ text: "password updated", ok: true });
-            setTimeout(() => setPwMsg({ text: "", ok: true }), 2000);
+            setPwMsg({
+              text: "password updated" +
+                (r.sessions_ended ? ` — ${r.sessions_ended} other login(s) signed out` : ""),
+              ok: true,
+            });
+            setTimeout(() => setPwMsg({ text: "", ok: true }), 4000);
           } catch (e) {
             setPwMsg({ text: (e as Error).message, ok: false });
           }
@@ -629,9 +670,13 @@ export function SettingsModal() {
       </button>
       <div className={pwMsg.ok ? "ok-msg" : "err"}>{pwMsg.text}</div>
 
-      {isAdmin && <WatchlistSection />}
-      {isAdmin && <VoiceSection />}
+      <TwoFactorSection />
+      <SessionsSection />
+
+      {loggedIn && <WatchlistSection />}
+      {canSettings && <VoiceSection />}
       {isSuper && <UsersSection me={username} />}
+      {isSuper && <AuditSection />}
     </SqModal>
   );
 }

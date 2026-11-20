@@ -87,10 +87,23 @@ export interface Transmission {
 }
 
 export interface Status {
+  /** any signed-in account (a plain 'user' can look, and manage its own alerts) */
+  logged_in: boolean;
+  /** super/admin: runs the site — moderation, speakers, settings, cases */
   is_admin: boolean;
+  /** also manages accounts */
   is_super?: boolean;
+  /** older name for is_admin */
   can_settings?: boolean;
+  role?: "super" | "admin" | "user" | null;
   username: string | null;
+  /** this account has an authenticator app enrolled */
+  has_2fa?: boolean;
+  /** the site requires two-factor and this account hasn't enrolled yet */
+  must_enroll_2fa?: boolean;
+  min_password_len?: number;
+  /** private mode: nothing is served until you sign in */
+  login_required?: boolean;
   /** first run — no admin account exists yet; the setup wizard gates the app */
   needs_setup?: boolean;
   avatar_ts?: string | null;
@@ -300,6 +313,26 @@ export interface NetworkStatus {
 export interface User {
   username: string;
   role: "super" | "admin" | "user" | string;
+  has_2fa?: boolean;
+}
+
+export interface AuditEntry {
+  id: number;
+  ts: number;
+  username: string | null;
+  ip: string | null;
+  action: string;
+  detail: string | null;
+}
+
+export interface SessionInfo {
+  id: number;
+  created_at: number;
+  expires_at: number;
+  last_seen: number;
+  ip: string | null;
+  user_agent: string | null;
+  current: boolean;
 }
 
 export interface Watch {

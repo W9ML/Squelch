@@ -14,12 +14,23 @@ RestartSec=5
 # whisper models download into the data dir on first use
 Environment=HF_HOME=/var/lib/squelch/models
 
-# hardening
+# hardening: an unprivileged user that can write only its data directory
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/squelch
 PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# no Linux capabilities at all (the web port is >1024). To serve :443
+# directly, use a drop-in with AmbientCapabilities=CAP_NET_BIND_SERVICE and
+# CapabilityBoundingSet=CAP_NET_BIND_SERVICE instead.
+CapabilityBoundingSet=
+# recordings, the database and the session store are private to the service
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

@@ -22,7 +22,7 @@ export function SoundControl() {
     volume,
     setVolumePref,
     status,
-    isAdmin,
+    loggedIn,
     watches,
     reloadWatches,
     notifyPerm,
@@ -107,7 +107,7 @@ export function SoundControl() {
             </button>
           )}
 
-          {isAdmin && myCall && (
+          {loggedIn && myCall && (
             <label className="sound-mute" title={`Notify me whenever “${myCall}” is spoken on the air`}>
               <input
                 type="checkbox"
@@ -118,7 +118,7 @@ export function SoundControl() {
             </label>
           )}
 
-          {isAdmin && (
+          {loggedIn && (
             <div className="alert-watches">
               {watches.length === 0 ? (
                 <div className="alert-note">

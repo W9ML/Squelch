@@ -4,6 +4,8 @@
  *  the original app.js behavior. */
 
 import type {
+  AuditEntry,
+  SessionInfo,
   CallsignInfo,
   Connection,
   ConnStats,
@@ -23,18 +25,28 @@ import type {
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  /** HTTP status of the failed call */
+  status = 0;
+  /** the parsed JSON error body, when there was one */
+  data: Record<string, unknown> = {};
+}
 
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(BASE + path, { credentials: "same-origin", ...opts });
   if (!res.ok) {
     let detail = res.statusText;
+    let data: Record<string, unknown> = {};
     try {
-      detail = (await res.json()).detail || detail;
+      data = await res.json();
+      if (typeof data.detail === "string") detail = data.detail;
     } catch {
       /* not json */
     }
-    throw new ApiError(detail);
+    const err = new ApiError(detail);
+    err.status = res.status;
+    err.data = data;
+    throw err;
   }
   // some endpoints (logout) return empty
   const text = await res.text();
@@ -100,9 +112,10 @@ export const api = {
   setVoterDisabled: (disabled: boolean) =>
     post("/api/settings/voter_disabled", { disabled }),
   voterStatusUrl: () => `${BASE}/api/link`,
-  login: (username: string, password: string) =>
-    post("/api/login", { username, password }),
+  login: (username: string, password: string, code = "") =>
+    post("/api/login", { username, password, code }),
   setup: (body: {
+    setup_code: string;
     username: string;
     password: string;
     callsign: string;
@@ -111,7 +124,15 @@ export const api = {
   }) => post("/api/setup", body),
   logout: () => post("/api/logout"),
   changePassword: (current: string, next: string) =>
-    post("/api/password", { current, new: next }),
+    post<{ ok: boolean; sessions_ended: number }>("/api/password", { current, new: next }),
+
+  // ---- two-factor + own sessions ----
+  twofaBegin: () => post<{ secret: string; uri: string }>("/api/account/2fa/begin"),
+  twofaConfirm: (code: string) => post("/api/account/2fa/confirm", { code }),
+  twofaDisable: (password: string) => post("/api/account/2fa/disable", { password }),
+  mySessions: () => request<{ sessions: SessionInfo[] }>("/api/account/sessions"),
+  revokeOtherSessions: () =>
+    post<{ ok: boolean; ended: number }>("/api/account/sessions/revoke_others"),
 
   // ---- feed ----
   transmissions: (params: FeedParams = {}) => {
@@ -183,6 +204,13 @@ export const api = {
   setUserRole: (username: string, role: string) =>
     post(`/api/users/${encodeURIComponent(username)}/role`, { role }),
   deleteUser: (username: string) => del(`/api/users/${encodeURIComponent(username)}`),
+  revokeUserSessions: (username: string) =>
+    post<{ ok: boolean; ended: number }>(
+      `/api/users/${encodeURIComponent(username)}/revoke_sessions`),
+  resetUser2fa: (username: string) =>
+    del(`/api/users/${encodeURIComponent(username)}/2fa`),
+  audit: (limit = 200) =>
+    request<{ entries: AuditEntry[] }>(`/api/audit?limit=${limit}`),
 
   // ---- watchlist ----
   watchlist: () => request<{ watchlist: Watch[] }>("/api/watchlist"),

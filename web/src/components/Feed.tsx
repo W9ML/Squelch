@@ -55,7 +55,7 @@ function handleWatchHit(msg: Extract<WsEvent, { type: "watch_hit" }>, sound: boo
 }
 
 function DayDivider({ epoch, onPurged }: { epoch: number; onPurged: () => void }) {
-  const { isAdmin, openModal } = useApp();
+  const { canSettings, openModal } = useApp();
   const purge = async () => {
     const [start, end] = dayBounds(epoch);
     let count: number | string = "";
@@ -81,7 +81,7 @@ function DayDivider({ epoch, onPurged }: { epoch: number; onPurged: () => void }
   return (
     <div className="day-divider">
       <span>{fmtDay(epoch)}</span>
-      {isAdmin && (
+      {canSettings && (
         <button className="day-purge" title="Delete all recordings from this day" onClick={purge}>
           <FontAwesomeIcon icon={ICONS.trash} />
         </button>
@@ -227,7 +227,8 @@ export function Feed() {
     searching,
     searchText,
     isFiltered,
-    isAdmin,
+    loggedIn,
+    canSettings,
     rxActive,
     paused,
     soundOn,
@@ -393,14 +394,14 @@ export function Feed() {
   useEffect(() => {
     if (!status) return; // wait for the first status
     if (authSeen.current === null) {
-      authSeen.current = isAdmin; // adopt the initial state without reloading
+      authSeen.current = loggedIn; // adopt the initial state without reloading
       return;
     }
-    if (authSeen.current !== isAdmin) {
-      authSeen.current = isAdmin;
+    if (authSeen.current !== loggedIn) {
+      authSeen.current = loggedIn;
       loadFeed(false);
     }
-  }, [status, isAdmin, loadFeed]);
+  }, [status, loggedIn, loadFeed]);
 
   // clicking the brand/logo returns to the home view. clearAllFilters (fired in
   // the same goHome) reloads the latest page and scrolls to the bottom; here we
@@ -714,7 +715,7 @@ export function Feed() {
         key={tx.id}
         tx={tx}
         onDeleted={removeTx}
-        selectable={isAdmin}
+        selectable={canSettings}
         selected={selected.has(tx.id)}
         onToggleSelect={toggleSelect}
         removing={removingIds.has(tx.id)}
@@ -798,7 +799,7 @@ export function Feed() {
             />
           </label>
         </div>
-        {isAdmin && status && !status.last_frame && rows.length === 0 && (
+        {canSettings && status && !status.last_frame && rows.length === 0 && (
           <NodeSetupHint port={status.usrp_port} />
         )}
         {exhausted && rows.length > 0 && (
@@ -826,7 +827,7 @@ export function Feed() {
       {dtmfLive && (
         <DtmfOverlay digits={dtmfLive.digits} flash={dtmfLive.flash} nonce={dtmfLive.nonce} />
       )}
-      {isAdmin && selected.size > 0 && (
+      {canSettings && selected.size > 0 && (
         <div className="bulk-bar">
           <span className="bulk-count">{selected.size} selected</span>
           {status?.can_settings && (

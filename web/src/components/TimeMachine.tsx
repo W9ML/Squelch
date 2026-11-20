@@ -104,7 +104,7 @@ export function TimeMachine() {
   const playRef = useRef<HTMLButtonElement>(null);
   const teardownRef = useRef<() => void>(() => {});
 
-  const loggedIn = !!status?.is_admin;
+  const loggedIn = !!status?.logged_in && !status?.must_enroll_2fa;
   const hasGeo = !!status?.has_geo;
   const hasExport = !!status?.has_export;
 
@@ -166,7 +166,7 @@ export function TimeMachine() {
           <button className="tm-btn" data-ripple title="Collapse the dead air between overs">⤺ Compress silence</button>
           <button className="tm-btn" data-mute title="Audio plays at 1× · Play to hear it">🔊 Audio</button>
           <button className="tm-btn tm-solo-chip" data-solochip hidden></button>
-          {hasExport && loggedIn && (
+          {hasExport && !!status?.is_admin && (
             <button className="tm-btn" data-export title="Render this view to an MP4">⤓ Export</button>
           )}
           <span className="tm-tc" ref={tcRef}>--:--:--<span className="sub" ref={tcSubRef} /></span>

@@ -15,7 +15,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 export function useVolumePopover(toggle: () => void, touchHold = true): {
   open: boolean;
   close: () => void;
-  ref: RefObject<HTMLDivElement>;
+  ref: RefObject<HTMLDivElement | null>;
   popStyle: React.CSSProperties | undefined;
   wrapProps: {
     onPointerEnter: (e: React.PointerEvent) => void;

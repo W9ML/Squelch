@@ -19,12 +19,49 @@ import { AddToCaseModal } from "./modals/AddToCaseModal";
 import { LogbookModal } from "./modals/LogbookModal";
 import { ConnLogModal } from "./modals/ConnLogModal";
 import { TimeMachine } from "./TimeMachine";
+import { SqModal } from "./modals/SqModal";
+import { TwoFactorEnroll } from "./modals/SecuritySections";
+import { api } from "@/lib/api";
+
+/** [web] require_2fa: an account without an authenticator can do nothing
+ *  else until it enrols one (or signs out). */
+function EnrollGate() {
+  const { refreshStatus } = useApp();
+  return (
+    <SqModal
+      title="Set up two-factor sign-in"
+      noClose
+      onClose={() => {}}
+      footer={
+        <button
+          className="text-btn"
+          onClick={async () => {
+            await api.logout().catch(() => {});
+            await refreshStatus();
+          }}
+        >
+          Log out
+        </button>
+      }
+    >
+      <p className="setup-intro">
+        This site requires an authenticator app for every account. Set yours up
+        to continue.
+      </p>
+      <TwoFactorEnroll onDone={refreshStatus} />
+    </SqModal>
+  );
+}
 
 export function ModalHost() {
-  const { modal, status } = useApp();
+  const { modal, status, locked } = useApp();
   // first-run gate: until an admin account exists, the setup wizard supersedes
   // every other modal and can't be dismissed.
   if (status?.needs_setup) return <SetupModal />;
+  // signed in, but the site requires two-factor and this account has none
+  if (status?.must_enroll_2fa) return <EnrollGate />;
+  // private mode: the sign-in door, which can't be dismissed
+  if (locked) return <LoginModal gate />;
   if (!modal) return null;
   switch (modal.kind) {
     case "timemachine":

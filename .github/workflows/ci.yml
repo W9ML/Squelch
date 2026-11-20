@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # weekly, so a newly published advisory fails the audit even with no pushes
+    - cron: "23 7 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Security tests + Python audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Install the core dependencies at their locked versions
+        run: |
+          python -m pip install --upgrade pip
+          # the lock's exact versions for everything the tests import; the
+          # multi-gigabyte ML stack (torch) is audited below but not installed
+          grep -E '^(fastapi|uvicorn|starlette|pydantic|pydantic-core|python-multipart|cryptography|numpy|scipy|requests|pywebpush|paho-mqtt|anyio|h11|httptools|websockets|py-vapid|http-ece)==' requirements.lock \
+            | sed 's/ \\$//' > /tmp/core.txt
+          cat /tmp/core.txt
+          pip install -r /tmp/core.txt pytest httpx pip-audit
+      - name: Byte-compile everything
+        run: python -m compileall -q squelch tools
+      - name: Security test suite
+        run: pytest -q tests
+      - name: Audit every locked Python package for known vulnerabilities
+        run: pip-audit -r requirements.lock --require-hashes --disable-pip
+
+  frontend:
+    name: Frontend build + npm audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"   # Debian 13 ships 20; any >= 20.9 builds it
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high

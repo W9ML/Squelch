@@ -21,6 +21,9 @@ def main() -> int:
                         help="path to config file (TOML)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="debug logging")
+    parser.add_argument("--reset-2fa", metavar="USERNAME",
+                        help="turn off two-factor for an account that lost "
+                             "its authenticator, then exit")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -36,14 +39,44 @@ def main() -> int:
     cfg = load_config(cfg_path)
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
-    # admin_password bootstraps the first "admin" account on an empty
-    # database; once any user exists, accounts are managed in the web UI
-    if not cfg.admin_password and not (cfg.db_path.exists()):
-        logging.warning("no admin_password set and no users exist yet - "
-                        "admin features will be locked until you set one")
+    if args.reset_2fa:
+        # lock-out recovery for someone who lost their authenticator and has
+        # no other super admin to reset it: run on the server, as the
+        # service user, then log in with the password alone and re-enrol
+        from .auth import AuthManager
+        from .db import Database
+        db = Database(cfg.db_path)
+        if db.get_user_hash(args.reset_2fa) is None:
+            print(f"no such user: {args.reset_2fa}", file=sys.stderr)
+            return 1
+        auth = AuthManager(db, cfg.data_dir)
+        auth.clear_2fa(args.reset_2fa)
+        auth.revoke_user(args.reset_2fa)
+        db.audit("2fa_reset", None, None, f"{args.reset_2fa} (from the CLI)")
+        print(f"two-factor cleared for {args.reset_2fa}; "
+              "their sessions were ended")
+        return 0
 
     app = create_app(cfg)
-    uvicorn.run(app, host=cfg.web_bind, port=cfg.web_port, log_level="warning")
+    tls = {}
+    if cfg.tls_cert or cfg.tls_key:
+        if not (cfg.tls_cert and cfg.tls_key):
+            print("[web] tls_cert and tls_key must be set together",
+                  file=sys.stderr)
+            return 1
+        tls = {"ssl_certfile": cfg.tls_cert, "ssl_keyfile": cfg.tls_key}
+    elif cfg.web_bind not in ("127.0.0.1", "::1", "localhost"):
+        logging.warning(
+            "serving plain HTTP on %s:%d — put a TLS proxy in front (and set "
+            "[web] force_https), or set [web] tls_cert / tls_key, before "
+            "anyone logs in over an untrusted network",
+            cfg.web_bind, cfg.web_port)
+    # proxy_headers off: uvicorn must not rewrite the client address from
+    # X-Forwarded-For. Squelch does that itself, only for [web]
+    # trusted_proxies (see web.ProxyTrust).
+    uvicorn.run(app, host=cfg.web_bind, port=cfg.web_port,
+                log_level="warning", proxy_headers=False,
+                server_header=False, **tls)
     return 0
 
 

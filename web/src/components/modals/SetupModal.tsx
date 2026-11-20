@@ -10,6 +10,7 @@ import { SqModal } from "./SqModal";
  *  moment any user exists, so it can't be used to add accounts later. */
 export function SetupModal() {
   const { refreshStatus } = useApp();
+  const [code, setCode] = useState("");
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -20,6 +21,7 @@ export function SetupModal() {
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
+    if (!code.trim()) return setErr("enter the setup code from the server");
     if (!user.trim()) return setErr("choose an admin username");
     if (pass.length < 12) return setErr("password must be at least 12 characters");
     if (pass !== confirm) return setErr("the passwords do not match");
@@ -27,6 +29,7 @@ export function SetupModal() {
     setBusy(true);
     try {
       await api.setup({
+        setup_code: code.trim(),
         username: user.trim(),
         password: pass,
         callsign: callsign.trim(),
@@ -52,16 +55,28 @@ export function SetupModal() {
       }
     >
       <p className="setup-intro">
-        Create your administrator account. Viewing the feed stays public — this
-        login is what unlocks naming speakers and changing settings.
+        Create the administrator account. To prove this is your server, enter
+        the one-time setup code it printed when it started — run{" "}
+        <code>sudo cat /var/lib/squelch/setup-code</code> on the server (it is
+        also in <code>journalctl -u squelch</code>).
       </p>
 
+      <label>Setup code</label>
+      <input
+        type="text"
+        placeholder="XXXX-XXXX"
+        value={code}
+        autoFocus
+        autoCapitalize="characters"
+        autoComplete="off"
+        spellCheck={false}
+        onChange={(e) => setCode(e.target.value)}
+      />
       <label>Admin username</label>
       <input
         type="text"
         placeholder="admin"
         value={user}
-        autoFocus
         onChange={(e) => setUser(e.target.value)}
       />
       <label>

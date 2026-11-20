@@ -49,7 +49,7 @@ function statusPill(
 export function Header() {
   const {
     status,
-    isAdmin,
+    loggedIn,
     canSettings,
     connections,
     theme,
@@ -277,12 +277,12 @@ export function Header() {
           <span className="status-text">{pill.text}</span>
         </div>
 
-        {isAdmin ? (
+        {loggedIn ? (
           <AccountMenu />
         ) : (
           <button
             className="text-btn login-btn"
-            title="Admin login"
+            title="Log in"
             onClick={() => openModal({ kind: "login" })}
           >
             Login

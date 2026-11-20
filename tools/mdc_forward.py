@@ -77,6 +77,11 @@ def main() -> None:
     ap.add_argument("--token", default=os.environ.get("SQUELCH_MDC_TOKEN", ""),
                     help="shared secret (matches [mdc] forward_token)")
     args = ap.parse_args()
+    if not args.token:
+        sys.exit("no token: squelch refuses reports without one. Set [mdc] "
+                 "forward_token on the squelch server and pass the same value "
+                 "here with --token or the SQUELCH_MDC_TOKEN environment "
+                 "variable.")
 
     print(f"forwarding MDC from {args.log} -> {args.url}/api/mdc", flush=True)
     for line in follow(args.log):

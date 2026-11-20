@@ -62,9 +62,37 @@ CREATE INDEX IF NOT EXISTS idx_conn_connected ON connections(connected_at);
 CREATE TABLE IF NOT EXISTS users (
     username TEXT PRIMARY KEY,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'admin',   -- 'super' | 'admin'
-    created_at REAL NOT NULL
+    role TEXT NOT NULL DEFAULT 'admin',   -- 'super' | 'admin' | 'user'
+    created_at REAL NOT NULL,
+    totp_secret TEXT,              -- base32; NULL = two-factor off
+    totp_pending TEXT,             -- enrolment started, not yet confirmed
+    totp_last_step INTEGER         -- last accepted time step (replay guard)
 );
+
+-- Login sessions. The browser holds a random token; only its SHA-256 is
+-- stored, so a copy of the database can't be replayed as a login.
+CREATE TABLE IF NOT EXISTS sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash TEXT NOT NULL UNIQUE,
+    username TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    last_seen REAL NOT NULL,
+    ip TEXT,
+    user_agent TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(username);
+
+-- Who did what: account, login and destructive actions (append-only).
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    username TEXT,                 -- NULL for anonymous / system
+    ip TEXT,
+    action TEXT NOT NULL,
+    detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
 
 CREATE TABLE IF NOT EXISTS watchlist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -285,6 +313,11 @@ class Database:
                 # existing accounts keep full rights (super) so the
                 # upgrade never locks anyone out of user management
                 self._conn.execute("UPDATE users SET role='super'")
+            for col, decl in (("totp_secret", "TEXT"), ("totp_pending", "TEXT"),
+                              ("totp_last_step", "INTEGER")):
+                if col not in ucols:
+                    self._conn.execute(
+                        f"ALTER TABLE users ADD COLUMN {col} {decl}")
 
     def close(self) -> None:
         with self._lock:
@@ -1472,9 +1505,10 @@ class Database:
     def list_users(self) -> list[dict]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT username, role, created_at FROM users"
+                "SELECT username, role, created_at,"
+                " totp_secret IS NOT NULL AS has_2fa FROM users"
                 " ORDER BY created_at").fetchall()
-        return [dict(r) for r in rows]
+        return [{**dict(r), "has_2fa": bool(r["has_2fa"])} for r in rows]
 
     def create_user(self, username: str, password_hash: str,
                     role: str = "admin") -> None:
@@ -1500,7 +1534,131 @@ class Database:
         with self._lock, self._conn:
             cur = self._conn.execute(
                 "DELETE FROM users WHERE username=?", (username,))
+            # a deleted account's logins die with it
+            self._conn.execute(
+                "DELETE FROM sessions WHERE username=?", (username,))
             return cur.rowcount > 0
+
+    # ---- two-factor (TOTP) ----
+
+    def get_user_totp(self, username: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT totp_secret, totp_pending, totp_last_step FROM users"
+                " WHERE username=?", (username,)).fetchone()
+        return dict(row) if row else None
+
+    def set_user_totp(self, username: str, *, secret: str | None,
+                      pending: str | None, last_step: int | None) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE users SET totp_secret=?, totp_pending=?,"
+                " totp_last_step=? WHERE username=?",
+                (secret, pending, last_step, username))
+
+    def set_user_totp_pending(self, username: str, pending: str | None) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE users SET totp_pending=? WHERE username=?",
+                (pending, username))
+
+    def set_user_totp_step(self, username: str, step: int) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE users SET totp_last_step=? WHERE username=?",
+                (step, username))
+
+    # ---- sessions ----
+
+    def create_session(self, token_hash: str, username: str, now: float,
+                       expires_at: float, ip: str | None,
+                       user_agent: str | None) -> int:
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO sessions (token_hash, username, created_at,"
+                " expires_at, last_seen, ip, user_agent) VALUES (?,?,?,?,?,?,?)",
+                (token_hash, username, now, expires_at, now, ip,
+                 (user_agent or "")[:300] or None))
+            return cur.lastrowid
+
+    def get_session(self, token_hash: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT s.id, s.username, s.created_at, s.expires_at,"
+                " s.last_seen FROM sessions s JOIN users u"
+                " ON u.username = s.username WHERE s.token_hash=?",
+                (token_hash,)).fetchone()
+        return dict(row) if row else None
+
+    def touch_session(self, session_id: int, now: float) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE sessions SET last_seen=? WHERE id=?", (now, session_id))
+
+    def delete_session(self, token_hash: str) -> bool:
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM sessions WHERE token_hash=?", (token_hash,))
+            return cur.rowcount > 0
+
+    def delete_session_id(self, session_id: int, username: str) -> bool:
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM sessions WHERE id=? AND username=?",
+                (session_id, username))
+            return cur.rowcount > 0
+
+    def delete_user_sessions(self, username: str,
+                             keep_hash: str | None = None) -> int:
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM sessions WHERE username=? AND token_hash IS NOT ?",
+                (username, keep_hash))
+            return cur.rowcount
+
+    def list_sessions(self, username: str) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, token_hash, created_at, expires_at, last_seen, ip,"
+                " user_agent FROM sessions WHERE username=?"
+                " ORDER BY last_seen DESC", (username,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def prune_sessions(self, now: float, idle_cutoff: float) -> int:
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM sessions WHERE expires_at<=? OR last_seen<?",
+                (now, idle_cutoff))
+            return cur.rowcount
+
+    # ---- audit log ----
+
+    def audit(self, action: str, username: str | None = None,
+              ip: str | None = None, detail: str = "") -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO audit_log (ts, username, ip, action, detail)"
+                " VALUES (?,?,?,?,?)",
+                (time.time(), username, ip, action, (detail or "")[:1000]))
+
+    def prune_audit(self, days: int) -> int:
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM audit_log WHERE ts<?",
+                (time.time() - days * 86400,))
+            return cur.rowcount
+
+    def list_audit(self, limit: int = 200,
+                   before_id: int | None = None) -> list[dict]:
+        q = "SELECT id, ts, username, ip, action, detail FROM audit_log"
+        params: tuple = ()
+        if before_id is not None:
+            q += " WHERE id<?"
+            params = (before_id,)
+        q += " ORDER BY id DESC LIMIT ?"
+        with self._lock:
+            rows = self._conn.execute(q, params + (limit,)).fetchall()
+        return [dict(r) for r in rows]
 
     # ---- settings ----
 

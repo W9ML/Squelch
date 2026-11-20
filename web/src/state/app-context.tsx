@@ -63,9 +63,15 @@ export type Modal =
 
 interface AppContextValue {
   status: Status | null;
-  isAdmin: boolean;
+  /** any signed-in account — may look at login-gated data and manage its
+   *  own alerts, nothing else */
+  loggedIn: boolean;
   isSuper: boolean;
+  /** super/admin — everything that changes what other people see */
   canSettings: boolean;
+  /** the site is private (or requires two-factor) and this browser isn't
+   *  through the door yet: render the sign-in gate instead of the feed */
+  locked: boolean;
   username: string | null;
   rxActive: boolean;
   /** stuck-repeater gate is up — transcription paused */
@@ -158,6 +164,8 @@ function localTheme(): string | null {
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status | null>(null);
+  /** true until we know this browser may read the feed (see `locked`) */
+  const lockedRef = useRef(true);
   const [wsOpen, setWsOpen] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const [rxActive, setRxActive] = useState(false);
@@ -476,12 +484,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     window.addEventListener("beforeinstallprompt", onBip);
     window.addEventListener("appinstalled", onInstalled);
 
+    // MDC units + avatars load from the effect below, once the first status
+    // says we're allowed to (in private mode they'd 401 before sign-in)
     refreshStatus();
-    reloadMdcUnits();
-    reloadAvatars();
     const id = setInterval(() => {
       refreshStatus();
-      reloadAvatars();     // picks up freshly enriched QRZ photos
+      if (!lockedRef.current) reloadAvatars(); // freshly enriched QRZ photos
     }, 30000);
     return () => {
       clearInterval(id);
@@ -496,22 +504,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // once we know the account is a logged-in admin and notifications are already
   // granted (e.g. from Phase 1), make sure this device is subscribed to push
   useEffect(() => {
-    if (status?.is_admin && notifyPermission() === "granted") subscribeToPush();
-  }, [status?.is_admin]);
+    if (status?.logged_in && !status.must_enroll_2fa &&
+        notifyPermission() === "granted") subscribeToPush();
+  }, [status?.logged_in, status?.must_enroll_2fa]);
 
   // watch rules are settings-gated; load them once the account qualifies so the
   // star toggles can reflect current state (anonymous users just get no stars)
   useEffect(() => {
-    if (status?.is_admin) reloadWatches(); // alerts are per logged-in user
+    if (status?.logged_in && !status.must_enroll_2fa) reloadWatches(); // alerts are per logged-in user
     else setWatches([]);
-  }, [status?.is_admin, reloadWatches]);
+  }, [status?.logged_in, status?.must_enroll_2fa, reloadWatches]);
+
+  // private mode: the MDC/avatar lookups 401 until you're signed in, so
+  // fetch them again once the door opens
+  const locked = !!status &&
+    (!!status.must_enroll_2fa || (!!status.login_required && !status.logged_in));
+  lockedRef.current = !status || locked;
+  useEffect(() => {
+    if (status && !locked) {
+      reloadMdcUnits();
+      reloadAvatars();
+    }
+  }, [!!status, locked, reloadMdcUnits, reloadAvatars]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const value: AppContextValue = useMemo(
     () => ({
       status,
-      isAdmin: !!status?.is_admin,
+      loggedIn: !!status?.logged_in && !status?.must_enroll_2fa,
       isSuper: !!status?.is_super,
-      canSettings: !!status?.can_settings,
+      canSettings: !!status?.is_admin,
+      locked,
       username: status?.username ?? null,
       rxActive,
       stormActive,

@@ -18,6 +18,12 @@ callsign = "W9ML"
 # the Pi's rpt.conf (see README).
 bind = "0.0.0.0"
 port = 32001
+# Only accept audio frames from these addresses (IPs or CIDRs) — normally
+# just the node. Empty accepts any sender that can reach the port, so either
+# set this or firewall the port to the node (install.sh opens it to the local
+# subnet only when ufw is active).
+# allow_from = ["192.168.1.50"]
+allow_from = []
 
 [audio]
 data_dir = "/var/lib/squelch"
@@ -109,9 +115,12 @@ key = ""
 # gate the pre-burst out of the audio before it reaches squelch, in which
 # case this finds nothing and you want the forwarder below instead.
 enabled = true
-# Optional shared secret for POST /api/mdc, used when the node's
-# mdc_forward.py ships app_rpt-decoded IDs to squelch. Leave empty on a
-# trusted LAN; if set, the forwarder must send the same token.
+# Shared secret for the node's reporters — tools/mdc_forward.py and
+# tools/source_monitor.py — which POST to /api/mdc, /api/source and
+# /api/link. REQUIRED for those to work: with no token set here the three
+# endpoints refuse everything (they change what every viewer sees, so they
+# are never left open). install.sh generates one for you; pass the same value
+# to the reporters with --token or the SQUELCH_MDC_TOKEN environment variable.
 forward_token = ""
 
 [dtmf]
@@ -216,11 +225,46 @@ base_url = ""
 [web]
 bind = "0.0.0.0"
 port = 8080
-# Bootstraps the first "admin" account the very first time squelch starts
-# with an empty database. After that, manage users/passwords from the
-# web UI (this value is ignored once any user exists). Leave empty to
-# run view-only until you set one.
-admin_password = "changeme"
+# The first account is created in the browser: open the site, and the setup
+# wizard asks for the one-time setup code the service printed at start
+# (sudo cat /var/lib/squelch/setup-code, or journalctl -u squelch).
+#
+# Headless alternative: set admin_password to bootstrap an "admin" super
+# admin on an empty database. It must be 12+ characters and not a known
+# default, it is ignored once any user exists, and you should delete it from
+# this file after the first start.
+admin_password = ""
+
+# ---- access ----
+# Private mode. true = nothing is readable without logging in: the feed,
+# recordings, logbook, speakers, stats and live audio all require an account
+# (create view-only "user" accounts for people who only need to look).
+# false = the public, receive-only view; logins are only for running the site.
+require_login = false
+# Require every account to enrol an authenticator app (TOTP) before it can do
+# anything. Off = two-factor is optional, per account (Settings).
+require_2fa = false
+min_password_len = 12
+# A login lasts at most session_days, and ends after session_idle_hours with
+# no use. Logging out, changing a password, or a super admin can end it sooner.
+session_days = 7
+session_idle_hours = 24
+
+# ---- transport ----
+# Reverse proxies allowed to tell squelch the visitor's real address and
+# whether they used HTTPS (X-Forwarded-For / X-Forwarded-Proto). The default
+# suits cloudflared or nginx on this same machine. Add your proxy's address
+# (IPs or CIDRs) if it runs elsewhere. Headers from anyone else are ignored.
+trusted_proxies = ["127.0.0.1", "::1"]
+# Behind a TLS-terminating proxy (Cloudflare tunnel, nginx with a cert):
+# redirect anything the proxy received over plain HTTP to HTTPS and send
+# HSTS, so a login never crosses the network unencrypted. Leave off for a
+# plain-HTTP setup (it would redirect to an HTTPS that isn't there).
+force_https = false
+# Or serve HTTPS directly, no proxy: paths to a PEM certificate chain and its
+# private key (readable by the squelch user).
+tls_cert = ""
+tls_key = ""
 # Initial site name (top-left); editable later in the admin settings
 # panel, which then takes precedence over this value.
 site_name = "Squelch"

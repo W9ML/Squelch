@@ -104,7 +104,7 @@ function HubBadge({ hub }: { hub: string }) {
 }
 
 function MdcBadge({ m }: { m: MdcEntry }) {
-  const { isAdmin, mdcUnits, setFilter, openModal } = useApp();
+  const { canSettings, mdcUnits, setFilter, openModal } = useApp();
   const id = m.unit_raw != null ? m.unit_raw : m.unit_id_hex;
   const op = m.unit_raw != null ? mdcUnits[m.unit_raw] || null : null;
   let title: string;
@@ -117,7 +117,7 @@ function MdcBadge({ m }: { m: MdcEntry }) {
     title = `MDC-1200 op 0x${(m.op || 0).toString(16).padStart(2, "0")} unit ${m.unit_id}`;
   }
   const filterable = m.unit_raw != null;
-  if (filterable && isAdmin) title += "\n(click to link this unit to an operator)";
+  if (filterable && canSettings) title += "\n(click to link this unit to an operator)";
 
   return (
     <span
@@ -127,7 +127,7 @@ function MdcBadge({ m }: { m: MdcEntry }) {
         filterable
           ? (e) => {
               e.stopPropagation();
-              if (isAdmin) openModal({ kind: "mdcLink", unit: m.unit_raw!, currentOp: op });
+              if (canSettings) openModal({ kind: "mdcLink", unit: m.unit_raw!, currentOp: op });
               else setFilter("mdc_unit", m.unit_raw!);
             }
           : undefined
@@ -249,7 +249,7 @@ export function TransmissionCard({
    *  is still running so the words don't flash to a shimmer */
   provisional?: string;
 }) {
-  const { isAdmin, status, speakers, setFilter, openModal, watchedSpeakerId, toggleSpeakerWatch } =
+  const { loggedIn, canSettings, status, speakers, setFilter, openModal, watchedSpeakerId, toggleSpeakerWatch } =
     useApp();
   const bus = useRef<EventTarget>(new EventTarget()).current;
   const [reprocessing, setReprocessing] = useState(false);
@@ -343,9 +343,9 @@ export function TransmissionCard({
 
   const nameClick = () => {
     if (tx.speaker_id != null) setFilter("speaker_id", tx.speaker_id);
-    else if (isAdmin) openModal({ kind: "speaker", tx });
+    else if (canSettings) openModal({ kind: "speaker", tx });
   };
-  const nameClickable = tx.speaker_id != null || isAdmin;
+  const nameClickable = tx.speaker_id != null || canSettings;
 
   return (
     <div
@@ -376,9 +376,9 @@ export function TransmissionCard({
         />
       ) : (
         <div
-          className={"avatar unknown" + (isAdmin ? " clickable" : "")}
-          title={isAdmin ? "click to name this voice" : undefined}
-          onClick={isAdmin ? nameClick : undefined}
+          className={"avatar unknown" + (canSettings ? " clickable" : "")}
+          title={canSettings ? "click to name this voice" : undefined}
+          onClick={canSettings ? nameClick : undefined}
         >
           ?
         </div>
@@ -401,7 +401,7 @@ export function TransmissionCard({
             </span>
           )}
 
-          {isAdmin && tx.speaker_id != null && label && (
+          {loggedIn && tx.speaker_id != null && label && (
             <button
               className={"star-btn" + (watchedSpeakerId(tx.speaker_id) ? " on" : "")}
               title={
@@ -447,10 +447,10 @@ export function TransmissionCard({
 
           {tx.speaker_id == null && tx.suggest_speaker_id != null && tx.suggest_label && (
             <button
-              className={"suggest-chip" + (isAdmin ? " clickable" : "")}
-              title={isAdmin ? "confirm this is " + tx.suggest_label : "possible match — not confirmed"}
+              className={"suggest-chip" + (canSettings ? " clickable" : "")}
+              title={canSettings ? "confirm this is " + tx.suggest_label : "possible match — not confirmed"}
               onClick={
-                isAdmin
+                canSettings
                   ? async (e) => {
                       e.stopPropagation();
                       try {
@@ -527,7 +527,7 @@ export function TransmissionCard({
             >
               <FontAwesomeIcon icon={shared ? ICONS.check : ICONS.share} />
             </button>
-            {isAdmin && (
+            {(canSettings || (loggedIn && tx.has_audio)) && (
               <>
                 <div className="card-menu-wrap" ref={menuRef}>
                   <button
@@ -541,7 +541,7 @@ export function TransmissionCard({
                   </button>
                   {menuOpen && (
                     <div className="card-menu" role="menu">
-                      {status?.can_settings && (
+                      {canSettings && (
                         <button
                           className="card-menu-item"
                           role="menuitem"
@@ -553,7 +553,7 @@ export function TransmissionCard({
                           <FontAwesomeIcon icon={ICONS.addCase} /> Add to case
                         </button>
                       )}
-                      {tx.speaker_id != null && (
+                      {canSettings && tx.speaker_id != null && (
                         <button
                           className="card-menu-item"
                           role="menuitem"
@@ -567,6 +567,7 @@ export function TransmissionCard({
                       )}
                       {tx.has_audio && (
                         <>
+                          {canSettings && (
                           <button
                             className="card-menu-item"
                             role="menuitem"
@@ -585,7 +586,8 @@ export function TransmissionCard({
                           >
                             <FontAwesomeIcon icon={ICONS.reprocess} /> Reprocess
                           </button>
-                          {status?.has_elevenlabs && (
+                          )}
+                          {canSettings && status?.has_elevenlabs && (
                             <button
                               className="card-menu-item"
                               role="menuitem"
@@ -621,6 +623,7 @@ export function TransmissionCard({
                     </div>
                   )}
                 </div>
+                {canSettings && (
                 <button
                   className="card-action danger"
                   title="Delete this recording"
@@ -646,6 +649,7 @@ export function TransmissionCard({
                 >
                   <FontAwesomeIcon icon={ICONS.trash} />
                 </button>
+                )}
               </>
             )}
           </span>
@@ -695,7 +699,7 @@ export function TransmissionCard({
         {/* voter RSSI is login-gated (it feeds the admin-only geolocation),
             so gate its panel on login state too — otherwise the already-
             embedded voter data lingers on cards loaded before logout */}
-        {isAdmin && tx.voter && tx.voter.nodes && tx.voter.nodes.length > 0 && (
+        {loggedIn && tx.voter && tx.voter.nodes && tx.voter.nodes.length > 0 && (
           <VoterPanel tx={tx} bus={bus} />
         )}
       </div>

@@ -54,7 +54,34 @@ except ImportError:
         EncoderClassifier = None
         _HAS_ECAPA = False
 
+def _ensure_pkg_resources() -> None:
+    """webrtcvad (a resemblyzer dependency) still does `import pkg_resources`
+    just to read its own version, and current setuptools no longer ships that
+    module — so on a fresh install resemblyzer failed to import and voice ID
+    quietly switched itself off. Provide the one call it makes, backed by the
+    standard library, rather than pinning an old setuptools."""
+    import sys
+    try:
+        import pkg_resources  # noqa: F401  (real one present: nothing to do)
+        return
+    except ImportError:
+        pass
+    import types
+    from importlib import metadata
+
+    class _Dist:
+        def __init__(self, name: str):
+            self.project_name = name
+            self.version = metadata.version(name)
+
+    shim = types.ModuleType("pkg_resources")
+    shim.get_distribution = _Dist
+    shim.DistributionNotFound = metadata.PackageNotFoundError
+    sys.modules["pkg_resources"] = shim
+
+
 try:
+    _ensure_pkg_resources()
     from resemblyzer import VoiceEncoder
     _HAS_RESEMBLYZER = True
 except ImportError:

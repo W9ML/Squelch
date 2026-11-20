@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
+import ipaddress
 import logging
 import os
 import re
@@ -19,14 +21,14 @@ from urllib.parse import urlparse
 from fastapi import (FastAPI, HTTPException, Request, UploadFile, WebSocket,
                      WebSocketDisconnect)
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
-                                Response)
+                                RedirectResponse, Response)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from . import (__version__, elevenlabs_stt, geo, mqtt, pdfreport, qrz,
                tabexport, usrp, watchdog, webpush)
-from .auth import SESSION_COOKIE, SESSION_TTL, AuthManager
+from .auth import ROLES, SESSION_COOKIE, AuthManager
 from .callsigns import CALL_RE
 from .config import Config, WHISPER_MODELS
 from .db import Database
@@ -51,6 +53,8 @@ THEMES = ("paper", "crt", "amber", "cyan", "borland", "c64", "day")
 
 # how long to keep closed rows in the connection log
 _CONNLOG_RETENTION_DAYS = 30
+# how long the audit trail (logins, account changes, deletions) is kept
+_AUDIT_RETENTION_DAYS = 730
 
 LOGO_TYPES = {
     "image/png": ".png",
@@ -247,17 +251,77 @@ _VOTER_PAGE_JS = (
 )
 
 
-def _peer_ip(headers, client) -> str | None:
-    """Real client IP behind a local reverse proxy / tunnel: nginx and
-    cloudflared both set X-Forwarded-For (nginx also X-Real-IP), so prefer
-    those over the immediate peer (which is just the proxy on localhost)."""
-    xff = headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip() or None
-    xri = headers.get("x-real-ip")
-    if xri:
-        return xri.strip() or None
-    return client.host if client else None
+def _networks(entries) -> list:
+    """Parse a config list of IPs / CIDRs; bad entries are logged and skipped."""
+    nets = []
+    for e in entries or ():
+        try:
+            nets.append(ipaddress.ip_network(str(e).strip(), strict=False))
+        except ValueError:
+            log.error("ignoring bad address/CIDR in config: %r", e)
+    return nets
+
+
+def _in_networks(host: str | None, nets: list) -> bool:
+    try:
+        ip = ipaddress.ip_address((host or "").strip())
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return any(ip in n for n in nets)
+
+
+class ProxyTrust:
+    """Works out who a request really came from.
+
+    X-Forwarded-For / X-Forwarded-Proto are only believed when the socket
+    peer is a configured trusted proxy ([web] trusted_proxies; loopback by
+    default — cloudflared or nginx on the same box). The client address is
+    then the RIGHT-most entry that isn't itself a trusted proxy: proxies
+    append the address they saw, so everything left of that is whatever the
+    client chose to send and must not be used. A direct client's own
+    X-Forwarded-For is ignored entirely.
+    """
+
+    def __init__(self, trusted):
+        self._trusted = _networks(trusted)
+
+    def _peer(self, client) -> str | None:
+        return client.host if client else None
+
+    def from_proxy(self, client) -> bool:
+        return _in_networks(self._peer(client), self._trusted)
+
+    def client_ip(self, headers, client) -> str | None:
+        peer = self._peer(client)
+        if not self.from_proxy(client):
+            return peer
+        hops = [h.strip() for h in
+                (headers.get("x-forwarded-for") or "").split(",") if h.strip()]
+        for hop in reversed(hops):
+            try:
+                ipaddress.ip_address(hop)
+            except ValueError:
+                break                      # garbage — stop trusting the chain
+            if not _in_networks(hop, self._trusted):
+                return hop
+        return peer
+
+    def is_https(self, headers, client, url_scheme: str) -> bool:
+        if url_scheme in ("https", "wss"):
+            return True                    # serving TLS ourselves
+        if self.from_proxy(client):
+            proto = (headers.get("x-forwarded-proto") or "").split(",")[0]
+            return proto.strip().lower() == "https"
+        return False
+
+    def proxied_plain_http(self, headers, client) -> bool:
+        """A trusted TLS proxy says the browser reached it over http://."""
+        if not self.from_proxy(client):
+            return False
+        proto = (headers.get("x-forwarded-proto") or "").split(",")[0]
+        return proto.strip().lower() == "http"
 
 
 def _csp_with_next_hashes() -> str:
@@ -286,12 +350,14 @@ def _csp_with_next_hashes() -> str:
 
 class LoginBody(BaseModel):
     username: str = "admin"
-    password: str
+    password: str = Field(max_length=1024)
+    code: str = Field("", max_length=16)   # authenticator code, when enrolled
 
 
 class SetupBody(BaseModel):
     username: str
-    password: str
+    password: str = Field(max_length=1024)
+    setup_code: str = Field("", max_length=32)
     callsign: str = ""
     node: str = ""
     footer: str = ""
@@ -360,8 +426,8 @@ class VoterDisableBody(BaseModel):
 
 class UserBody(BaseModel):
     username: str
-    password: str
-    role: str = "admin"
+    password: str = Field(max_length=1024)
+    role: str = "user"
 
 
 class RoleBody(BaseModel):
@@ -369,8 +435,16 @@ class RoleBody(BaseModel):
 
 
 class PasswordBody(BaseModel):
-    current: str
-    new: str
+    current: str = Field(max_length=1024)
+    new: str = Field(max_length=1024)
+
+
+class CodeBody(BaseModel):
+    code: str = Field(max_length=16)
+
+
+class Disable2faBody(BaseModel):
+    password: str = Field(max_length=1024)
 
 
 class PurgeBody(BaseModel):
@@ -471,8 +545,9 @@ class _LoginThrottle:
     After `max_fails` failures from an IP the next attempts are locked out
     with exponential backoff (capped at `max_lock`). A success, or a quiet
     `window`, clears the counter. Defangs online password guessing; it is
-    not a substitute for a strong password. Note: behind a reverse proxy
-    every request carries the proxy's IP, so tune/observe accordingly.
+    not a substitute for a strong password. The IP comes from ProxyTrust,
+    so behind a trusted proxy it's the real client and a forged
+    X-Forwarded-For can't mint fresh buckets.
     """
 
     def __init__(self, max_fails: int = 5, window: float = 900.0,
@@ -512,8 +587,19 @@ def create_app(cfg: Config) -> FastAPI:
     broadcaster = Broadcaster()
     pipeline = Pipeline(cfg, db, broadcaster)
     exporter = Exporter(cfg, db, pipeline)
-    auth = AuthManager(db, cfg.data_dir, cfg.admin_password)
+    auth = AuthManager(
+        db, cfg.data_dir, cfg.admin_password,
+        session_ttl=cfg.session_days * 86400,
+        session_idle=cfg.session_idle_hours * 3600,
+        min_password_len=cfg.min_password_len)
     login_throttle = _LoginThrottle()
+    proxy = ProxyTrust(cfg.trusted_proxies)
+    if not cfg.mdc_forward_token:
+        log.warning("no [mdc] forward_token set — the node reporter endpoints "
+                    "(/api/mdc, /api/source, /api/link) are CLOSED until you "
+                    "set one here and on the node's forwarders")
+    if cfg.require_login:
+        log.info("private mode: nothing is readable without a login")
     nodedb = NodeDB(cfg.data_dir, cfg.node_aliases)
     branding_dir = cfg.data_dir / "branding"
     avatar_dir = cfg.data_dir / "avatars"
@@ -564,8 +650,9 @@ def create_app(cfg: Config) -> FastAPI:
         # (this one just started) — close them, then trim old history
         db.close_open_connections(time.time())
         db.prune_connections(_CONNLOG_RETENTION_DAYS)
+        db.prune_audit(_AUDIT_RETENTION_DAYS)
         transport = await usrp.start_listener(
-            cfg.usrp_bind, cfg.usrp_port, segmenter)
+            cfg.usrp_bind, cfg.usrp_port, segmenter, cfg.usrp_allow_from)
         pipeline.voter.start()
         if cfg.mqtt_enabled:
             publisher = mqtt.MqttPublisher(cfg)
@@ -618,13 +705,73 @@ def create_app(cfg: Config) -> FastAPI:
     # inline-script hashes for the Next.js frontend, computed once at startup
     csp = _csp_with_next_hashes()
 
+    # what an anonymous caller may still reach in private mode: the app shell
+    # (static files — they hold no data), the login/setup calls, the trimmed
+    # status the login screen needs, and the node's token-checked reporters.
+    _PRIVATE_OPEN = {"/api/status", "/api/login", "/api/logout", "/api/setup",
+                     "/api/logo", "/api/link.js"}
+    _REPORTER_PATHS = {"/api/mdc", "/api/source", "/api/link"}
+    _ENROL_OPEN = ("/api/account/2fa", "/api/account/sessions",
+                   "/api/password")
+
+    def client_ip(request) -> str | None:
+        return proxy.client_ip(request.headers, request.client)
+
+    def is_https(request) -> bool:
+        return proxy.is_https(request.headers, request.client,
+                              request.url.scheme)
+
+    def session_token(request) -> str | None:
+        return request.cookies.get(SESSION_COOKIE)
+
+    def current_user(request) -> str | None:
+        # cached per request: the middleware and the endpoint both ask
+        st = request.state
+        if not hasattr(st, "squelch_user"):
+            st.squelch_user = auth.verify_token(session_token(request))
+        return st.squelch_user
+
+    def must_enrol_2fa(user: str | None) -> bool:
+        return bool(user) and cfg.require_2fa and not auth.has_2fa(user)
+
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
-        response = await call_next(request)
+        # [web] force_https: a trusted TLS proxy (Cloudflare tunnel, nginx)
+        # forwarded a plain-HTTP request — send the browser to HTTPS before a
+        # login or session cookie crosses the internet in cleartext. Direct
+        # LAN requests carry no trusted X-Forwarded-Proto and are untouched.
+        if cfg.force_https and proxy.proxied_plain_http(
+                request.headers, request.client):
+            return RedirectResponse(
+                str(request.url.replace(scheme="https", port=None)),
+                status_code=308)
         path = request.url.path
+        response = None
+        if (cfg.require_login and path.startswith("/api/")
+                and path not in _PRIVATE_OPEN
+                and not (request.method == "POST" and path in _REPORTER_PATHS)):
+            user = current_user(request)
+            # a signed-in account that still owes a second factor may reach
+            # only the calls that let it enrol (or change its password)
+            enrolling = (user is not None and path.startswith(_ENROL_OPEN))
+            if (user is None or must_enrol_2fa(user)) and not enrolling:
+                # /api/link is also a browser page; let it render its own
+                # friendly "admins only" screen
+                if not (path == "/api/link" and request.method == "GET"):
+                    response = JSONResponse(
+                        {"detail": "login required"}, status_code=401)
+        if response is None:
+            response = await call_next(request)
         if path == "/":
             # cheap revalidation; avoids serving a stale index after upgrades
             response.headers["Cache-Control"] = "no-cache"
+        elif path.startswith("/api/"):
+            # API answers can hold per-account data: never let a shared cache
+            # (or the back button after logout) replay them
+            response.headers.setdefault("Cache-Control", "no-store")
+        if is_https(request):
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=15552000")
         # setdefault so endpoints with their own policy (e.g. /api/logo's
         # stricter 'sandbox' CSP) are not clobbered
         response.headers.setdefault("Content-Security-Policy", csp)
@@ -635,29 +782,57 @@ def create_app(cfg: Config) -> FastAPI:
             "Permissions-Policy", "geolocation=(), microphone=(), camera=()")
         return response
 
-    def current_user(request: Request) -> str | None:
-        return auth.verify_token(request.cookies.get(SESSION_COOKIE))
-
-    def require_admin(request: Request) -> str:
+    # Three tiers. 'user' accounts can look (and manage their own alerts and
+    # account); 'admin' runs the site — moderation, speakers, settings, cases;
+    # 'super' additionally manages accounts and deletes case files.
+    def require_session(request: Request) -> str:
         user = current_user(request)
         if user is None:
-            raise HTTPException(status_code=403, detail="admin login required")
+            raise HTTPException(status_code=403, detail="login required")
+        return user
+
+    def require_login(request: Request) -> str:
+        # [web] require_2fa: an account without an authenticator can only
+        # reach the calls that let it enrol one (those use require_session)
+        user = require_session(request)
+        if must_enrol_2fa(user):
+            raise HTTPException(
+                status_code=403,
+                detail="set up two-factor authentication first")
+        return user
+
+    def require_admin(request: Request) -> str:
+        user = require_login(request)
+        if not auth.is_admin(user):
+            raise HTTPException(status_code=403,
+                                detail="admin access required")
         return user
 
     def require_super(request: Request) -> str:
-        user = require_admin(request)
+        user = require_login(request)
         if not auth.is_super(user):
             raise HTTPException(status_code=403,
                                 detail="super admin required")
         return user
 
-    def require_settings(request: Request) -> str:
-        # settings are for super/admin; plain 'user' accounts are blocked
-        user = require_admin(request)
-        if not auth.can_settings(user):
-            raise HTTPException(status_code=403,
-                                detail="settings access required")
-        return user
+    def audit(request, action: str, detail: str = "",
+              user: str | None = None) -> None:
+        """Record who did what. Never lets a logging failure break the call."""
+        who = None
+        try:
+            who = (user if user is not None else current_user(request)) or None
+            db.audit(action, who, client_ip(request), detail)
+            log.info("audit: %s by %s — %s", action, who or "-", detail)
+        except Exception:
+            log.exception("audit log write failed (%s)", action)
+
+    def set_session_cookie(resp, request, username: str) -> None:
+        token = auth.issue_token(
+            username, client_ip(request),
+            request.headers.get("user-agent"))
+        resp.set_cookie(SESSION_COOKIE, token,
+                        max_age=int(auth.session_ttl), httponly=True,
+                        samesite="lax", secure=is_https(request))
 
     def delete_audio_files(paths: list[str]) -> None:
         for p in paths:
@@ -702,11 +877,10 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/login")
     async def login(body: LoginBody, request: Request):
-        # throttle on the real client IP: behind a local tunnel/proxy
-        # (cloudflared, nginx) the socket peer is 127.0.0.1 for everyone,
-        # which would merge all visitors into ONE throttle bucket — an
-        # attacker's failures would lock legitimate users out
-        ip = _peer_ip(request.headers, request.client) or "?"
+        # throttle on the real client IP (see ProxyTrust): behind a local
+        # tunnel/proxy the socket peer is 127.0.0.1 for everyone, and a
+        # client-supplied X-Forwarded-For must not be able to dodge the count
+        ip = client_ip(request) or "?"
         now = time.time()
         wait = login_throttle.retry_after(ip, now)
         if wait > 0:
@@ -718,71 +892,171 @@ def create_app(cfg: Config) -> FastAPI:
         ok = await asyncio.to_thread(auth.login, username, body.password)
         if not ok:
             login_throttle.record_failure(ip, now)
+            audit(request, "login_failed", f"username={username[:40]}", user="")
             raise HTTPException(status_code=403,
                                 detail="wrong username or password")
+        if auth.has_2fa(username):
+            if not body.code.strip():
+                # password was right; ask the browser for the code. Not a
+                # throttle failure, but not a success either.
+                return JSONResponse({"detail": "authenticator code required",
+                                     "totp_required": True}, status_code=401)
+            if not await asyncio.to_thread(auth.check_2fa, username, body.code):
+                login_throttle.record_failure(ip, now)
+                audit(request, "login_failed",
+                      f"username={username} (bad two-factor code)", user="")
+                raise HTTPException(status_code=403,
+                                    detail="wrong authenticator code")
         login_throttle.record_success(ip)
         resp = JSONResponse({"ok": True, "username": username})
-        resp.set_cookie(SESSION_COOKIE, auth.issue_token(username),
-                        max_age=SESSION_TTL, httponly=True, samesite="lax",
-                        secure=request.url.scheme == "https")
+        set_session_cookie(resp, request, username)
+        audit(request, "login", user=username)
         return resp
 
     @app.post("/api/logout")
-    async def logout():
+    async def logout(request: Request):
+        # end the session server-side — a copied cookie is dead too
+        user = current_user(request)
+        token = session_token(request)
+        auth.revoke_token(token)
+        if user:
+            audit(request, "logout", user=user)
         resp = JSONResponse({"ok": True})
         resp.delete_cookie(SESSION_COOKIE)
         return resp
 
     @app.post("/api/password")
     async def change_password(body: PasswordBody, request: Request):
-        user = require_admin(request)
+        user = require_session(request)
         try:
             await asyncio.to_thread(
                 auth.change_password, user, body.current, body.new)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return {"ok": True}
+        # every OTHER login of this account ends now
+        n = auth.revoke_user(user, keep_token=session_token(request))
+        audit(request, "password_changed", f"{n} other session(s) ended")
+        return {"ok": True, "sessions_ended": n}
 
     @app.post("/api/setup")
     async def first_time_setup(body: SetupBody, request: Request):
         # first-run only: create the super-admin + station identity. Self-closes
         # the moment any user exists, so it can't be used to add accounts later.
+        # The setup code (printed in the service log and written to the data
+        # dir) proves the caller controls the server, so a stranger who finds
+        # a fresh install first can't claim it.
         if auth.enabled:
             raise HTTPException(status_code=403, detail="setup already complete")
+        ip = client_ip(request) or "?"
+        now = time.time()
+        wait = login_throttle.retry_after(ip, now)
+        if wait > 0:
+            raise HTTPException(
+                status_code=429,
+                detail=f"too many attempts — wait {int(wait) + 1}s",
+                headers={"Retry-After": str(int(wait) + 1)})
+        if not auth.check_setup_code(body.setup_code):
+            login_throttle.record_failure(ip, now)
+            raise HTTPException(
+                status_code=403,
+                detail="wrong setup code — it's in the service log "
+                       "(journalctl -u squelch) and in the data directory's "
+                       "setup-code file")
+        username = body.username.strip()
         try:
             await asyncio.to_thread(
-                auth.create_user, body.username.strip(), body.password, "super")
+                auth.create_user, username, body.password, "super")
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        auth.setup_done()
         if body.callsign.strip():
-            db.set_setting("brand_callsign", body.callsign.strip())
+            db.set_setting("brand_callsign", body.callsign.strip()[:40])
         if body.node.strip():
-            db.set_setting("brand_node", body.node.strip())
+            db.set_setting("brand_node", body.node.strip()[:40])
         if body.footer.strip():
-            db.set_setting("footer_text", body.footer.strip())
+            db.set_setting("footer_text", body.footer.strip()[:500])
         # log the new administrator straight in
-        resp = JSONResponse({"ok": True, "username": body.username.strip()})
-        resp.set_cookie(SESSION_COOKIE, auth.issue_token(body.username.strip()),
-                        max_age=SESSION_TTL, httponly=True, samesite="lax",
-                        secure=request.url.scheme == "https")
+        resp = JSONResponse({"ok": True, "username": username})
+        set_session_cookie(resp, request, username)
+        audit(request, "setup_complete", f"super admin {username} created",
+              user=username)
         return resp
+
+    # ---- two-factor (authenticator app) + own sessions ----
+
+    @app.get("/api/account/2fa")
+    async def twofa_status(request: Request):
+        user = require_session(request)
+        return {"enabled": auth.has_2fa(user), "required": cfg.require_2fa}
+
+    @app.post("/api/account/2fa/begin")
+    async def twofa_begin(request: Request):
+        user = require_session(request)
+        if auth.has_2fa(user):
+            raise HTTPException(status_code=400,
+                                detail="two-factor is already on")
+        site = db.get_setting("site_name", cfg.site_name) or "Squelch"
+        return await asyncio.to_thread(auth.begin_2fa, user, site)
+
+    @app.post("/api/account/2fa/confirm")
+    async def twofa_confirm(body: CodeBody, request: Request):
+        user = require_session(request)
+        try:
+            await asyncio.to_thread(auth.confirm_2fa, user, body.code)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        # other logins predate the second factor — end them
+        auth.revoke_user(user, keep_token=session_token(request))
+        audit(request, "2fa_enabled")
+        return {"ok": True}
+
+    @app.post("/api/account/2fa/disable")
+    async def twofa_disable(body: Disable2faBody, request: Request):
+        user = require_session(request)
+        if cfg.require_2fa:
+            raise HTTPException(
+                status_code=400,
+                detail="two-factor is required on this site and can't be "
+                       "turned off (an administrator can reset it)")
+        if not await asyncio.to_thread(auth.login, user, body.password):
+            raise HTTPException(status_code=403, detail="wrong password")
+        await asyncio.to_thread(auth.clear_2fa, user)
+        audit(request, "2fa_disabled")
+        return {"ok": True}
+
+    @app.get("/api/account/sessions")
+    async def my_sessions(request: Request):
+        user = require_session(request)
+        return {"sessions": await asyncio.to_thread(
+            auth.list_sessions, user, session_token(request))}
+
+    @app.post("/api/account/sessions/revoke_others")
+    async def revoke_my_other_sessions(request: Request):
+        user = require_session(request)
+        n = auth.revoke_user(user, keep_token=session_token(request))
+        audit(request, "sessions_revoked", f"{n} of own")
+        return {"ok": True, "ended": n}
 
     # ---- users (managing accounts is super-admin only) ----
 
     @app.get("/api/users")
     async def users(request: Request):
-        require_settings(request)       # super/admin see the roster
+        require_admin(request)       # super/admin see the roster
         return {"users": await asyncio.to_thread(db.list_users)}
 
     @app.post("/api/users")
     async def add_user(body: UserBody, request: Request):
         require_super(request)
-        role = body.role if body.role in ("super", "admin", "user") else "admin"
+        if body.role not in ROLES:
+            raise HTTPException(status_code=400,
+                                detail="role must be 'super', 'admin', or 'user'")
+        username = body.username.strip()
         try:
             await asyncio.to_thread(
-                auth.create_user, body.username.strip(), body.password, role)
+                auth.create_user, username, body.password, body.role)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        audit(request, "user_created", f"{username} ({body.role})")
         return {"ok": True}
 
     @app.post("/api/users/{username}/role")
@@ -792,6 +1066,25 @@ def create_app(cfg: Config) -> FastAPI:
             await asyncio.to_thread(auth.set_role, username, body.role)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        audit(request, "user_role_changed", f"{username} -> {body.role}")
+        return {"ok": True}
+
+    @app.post("/api/users/{username}/revoke_sessions")
+    async def revoke_user_sessions(username: str, request: Request):
+        require_super(request)
+        n = await asyncio.to_thread(auth.revoke_user, username)
+        audit(request, "sessions_revoked", f"{n} of {username}")
+        return {"ok": True, "ended": n}
+
+    @app.delete("/api/users/{username}/2fa")
+    async def reset_user_2fa(username: str, request: Request):
+        # for a lost phone: the user enrols again at next login
+        require_super(request)
+        if db.get_user_hash(username) is None:
+            raise HTTPException(status_code=404, detail="no such user")
+        await asyncio.to_thread(auth.clear_2fa, username)
+        await asyncio.to_thread(auth.revoke_user, username)
+        audit(request, "2fa_reset", username)
         return {"ok": True}
 
     @app.delete("/api/users/{username}")
@@ -801,7 +1094,17 @@ def create_app(cfg: Config) -> FastAPI:
             await asyncio.to_thread(auth.delete_user, username, acting)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        audit(request, "user_deleted", username)
         return {"ok": True}
+
+    @app.get("/api/audit")
+    async def audit_log(request: Request, limit: int = 200,
+                        before_id: int | None = None):
+        # the trail of logins, account changes and destructive actions
+        require_super(request)
+        rows = await asyncio.to_thread(
+            db.list_audit, max(1, min(limit, 1000)), before_id)
+        return {"entries": rows}
 
     # ---- status ----
 
@@ -810,7 +1113,39 @@ def create_app(cfg: Config) -> FastAPI:
         link_ok = (time.time() - segmenter.last_frame_wall) < 120 \
             if segmenter.last_frame_wall else False
         user = current_user(request)
+        enrol = must_enrol_2fa(user)
+        account = {
+            # logged_in = any account; is_admin = super/admin (runs the
+            # site); is_super = also manages accounts. can_settings is the
+            # older name for is_admin, kept for existing clients.
+            "logged_in": user is not None,
+            "is_admin": auth.is_admin(user) and not enrol,
+            "is_super": auth.is_super(user) and not enrol,
+            "can_settings": auth.is_admin(user) and not enrol,
+            "role": auth.role_of(user) if user else None,
+            "username": user,
+            "has_2fa": auth.has_2fa(user),
+            "must_enroll_2fa": enrol,
+            "min_password_len": auth.min_password_len,
+            # first run: no admin account yet -> the browser shows the setup wizard
+            "needs_setup": not auth.enabled,
+            # private mode: the feed is only served to logged-in accounts
+            "login_required": cfg.require_login,
+        }
+        if cfg.require_login and (user is None or enrol):
+            # private mode, not signed in: only what the login screen draws
+            return {
+                **account,
+                "site_name": db.get_setting("site_name", cfg.site_name),
+                "theme": db.get_setting("theme", "paper"),
+                "themes": list(THEMES),
+                "logo_ts": db.get_setting("logo_ts"),
+                "footer_text": db.get_setting("footer_text", cfg.footer_text),
+                "rx_active": False, "link_ok": False, "last_frame": None,
+                "models": [], "retention_days": 0,
+            }
         return {
+            **account,
             # subtitle overrides; blank falls back to the configured values
             "brand_callsign": db.get_setting("brand_callsign"),
             "brand_node": db.get_setting("brand_node"),
@@ -832,17 +1167,11 @@ def create_app(cfg: Config) -> FastAPI:
             "whisper_available": pipeline.transcriber.available,
             "speaker_id_available": pipeline.speaker_id.available,
             "models": list(WHISPER_MODELS),
-            "is_admin": user is not None,
-            "is_super": auth.is_super(user),
-            "can_settings": auth.can_settings(user),
-            "username": user,
-            # first run: no admin account yet -> the browser shows the setup wizard
-            "needs_setup": not auth.enabled,
             # live connection count — a super/admin feature, so only
             # surfaced to settings-capable callers (the WS presence events
             # that keep it live are likewise sent to super/admin sockets only)
             **({"connections": broadcaster.client_count}
-               if auth.can_settings(user) else {}),
+               if auth.is_admin(user) else {}),
             # the logged-in user's own profile-picture timestamp (for the
             # account tile); empty/absent means it shows initials
             "avatar_ts": (db.get_setting(f"avatar_ts:{user}") or None)
@@ -869,13 +1198,13 @@ def create_app(cfg: Config) -> FastAPI:
             "logo_ts": db.get_setting("logo_ts"),
             # QRZ XML config state, for the settings panel (never the password)
             **({"qrz_username": db.get_setting("qrz_username", "")}
-               if auth.can_settings(user) else {}),
+               if auth.is_admin(user) else {}),
             # voter polling state, for the settings panel (admin-only)
             **({"voter_idle_timeout": pipeline.voter.idle_enabled,
                 "voter_idle_minutes": pipeline.voter.idle_minutes,
                 "voter_polling_disabled": pipeline.voter.disabled,
                 "has_voter": bool(cfg.voter_sources)}
-               if auth.can_settings(user) else {}),
+               if auth.is_admin(user) else {}),
         }
 
     # ---- transmissions ----
@@ -974,7 +1303,7 @@ def create_app(cfg: Config) -> FastAPI:
                           q: str | None = None, status: str = "all"):
         # the connection log carries visitor IPs — super/admin only, not
         # plain 'user' accounts
-        require_settings(request)
+        require_admin(request)
         limit = max(1, min(limit, 1000))
         rows = await asyncio.to_thread(
             db.list_connections, limit, before_id, q, status)
@@ -985,7 +1314,7 @@ def create_app(cfg: Config) -> FastAPI:
                                 since: float | None = None,
                                 until: float | None = None):
         # visitor-IP analytics — super/admin only, same gate as the log
-        require_settings(request)
+        require_admin(request)
         days = max(0, min(days, 3650))          # 0 = all time
         tz = max(-840, min(840, tz))
         if since is None and until is None:
@@ -997,7 +1326,7 @@ def create_app(cfg: Config) -> FastAPI:
     @app.get("/api/connections/export")
     async def connections_export(request: Request, fmt: str = "csv",
                                  q: str | None = None, status: str = "all"):
-        require_settings(request)
+        require_admin(request)
         rows = await asyncio.to_thread(
             db.list_connections, 100_000, None, q, status)
         now = time.time()
@@ -1045,13 +1374,13 @@ def create_app(cfg: Config) -> FastAPI:
     async def tx_cases(tx_id: int, request: Request):
         # which cases a recording is already filed under -- settings-gated, so
         # the existence of an investigation never leaks to public viewers.
-        require_settings(request)
+        require_admin(request)
         cases = await asyncio.to_thread(db.cases_for_tx, tx_id)
         return {"cases": cases}
 
     @app.get("/api/transmissions/{tx_id}/geo")
     async def tx_geo(tx_id: int, request: Request):
-        require_admin(request)          # geolocation is admin-only
+        require_login(request)          # geolocation is admin-only
         if not cfg.voter_receivers:
             raise HTTPException(status_code=404, detail="no receiver coordinates configured")
         rec = await asyncio.to_thread(db.get_transmission, tx_id)
@@ -1072,7 +1401,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/transmissions/{tx_id}/audio.mp3")
     async def tx_audio_mp3(tx_id: int, request: Request):
-        require_admin(request)
+        require_login(request)
         path = await asyncio.to_thread(db.get_audio_path, tx_id)
         if not path or not Path(path).exists():
             raise HTTPException(status_code=404, detail="no audio")
@@ -1169,6 +1498,7 @@ def create_app(cfg: Config) -> FastAPI:
         if audio_path:
             delete_audio_files([audio_path])
         await broadcaster.send("tx_deleted", {"id": tx_id})
+        audit(request, "transmission_deleted", f"tx {tx_id}")
         return {"ok": True}
 
     @app.get("/api/transmissions/purge_count")
@@ -1202,6 +1532,8 @@ def create_app(cfg: Config) -> FastAPI:
         delete_audio_files(paths)
         await broadcaster.send("feed_reload", {})
         log.info("purged %d transmissions (%d audio files)", n, len(paths))
+        audit(request, "transmissions_purged",
+              f"{n} between {body.start:.0f} and {body.end:.0f}")
         return {"ok": True, "deleted": n}
 
     @app.post("/api/transmissions/{tx_id}/speaker")
@@ -1238,12 +1570,25 @@ def create_app(cfg: Config) -> FastAPI:
 
     # ---- MDC ingest (from the node's forwarder) ----
 
+    def require_reporter(request: Request) -> None:
+        # the node's forwarders (mdc_forward.py, source_monitor.py) prove
+        # themselves with the shared [mdc] forward_token. No token configured
+        # = closed: these calls change what every viewer sees, so they are
+        # never open to whoever can reach the port.
+        expected = cfg.mdc_forward_token
+        if not expected:
+            raise HTTPException(
+                status_code=403,
+                detail="reporter token not configured — set [mdc] "
+                       "forward_token on the server and pass the same value "
+                       "to the forwarder (--token / SQUELCH_MDC_TOKEN)")
+        token = request.headers.get("x-mdc-token", "")
+        if not hmac.compare_digest(token.encode(), expected.encode()):
+            raise HTTPException(status_code=403, detail="bad token")
+
     @app.post("/api/mdc")
     async def ingest_mdc(body: MDCBody, request: Request):
-        if cfg.mdc_forward_token:
-            token = request.headers.get("x-mdc-token", "")
-            if token != cfg.mdc_forward_token:
-                raise HTTPException(status_code=403, detail="bad token")
+        require_reporter(request)
         from .mdc_ingest import make_entry
         entry = make_entry(body.type, body.unit, body.node)
         attached = await pipeline.mdc_matcher.ingest(entry, recv=body.ts)
@@ -1251,10 +1596,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/source")
     async def ingest_source(body: SourceBody, request: Request):
-        if cfg.mdc_forward_token:
-            token = request.headers.get("x-mdc-token", "")
-            if token != cfg.mdc_forward_token:
-                raise HTTPException(status_code=403, detail="bad token")
+        require_reporter(request)
         origin = "local" if body.source == "local" else (body.node or "").strip()
         if not origin:
             raise HTTPException(status_code=400, detail="missing node number")
@@ -1266,10 +1608,7 @@ def create_app(cfg: Config) -> FastAPI:
     async def ingest_link(body: LinkBody, request: Request):
         # link state from the Pi's source monitor, used to pause voter
         # polling when we're not connected (same LAN-trust token as /api/source)
-        if cfg.mdc_forward_token:
-            token = request.headers.get("x-mdc-token", "")
-            if token != cfg.mdc_forward_token:
-                raise HTTPException(status_code=403, detail="bad token")
+        require_reporter(request)
         pipeline.voter.report_link(body.connected)
         pipeline.network.report(body.hub, body.connected)
         return {"ok": True, "gating": cfg.voter_gate_on_connect}
@@ -1283,12 +1622,12 @@ def create_app(cfg: Config) -> FastAPI:
         user = current_user(request)
         wants_html = ("text/html" in request.headers.get("accept", "")
                       and "json" not in request.query_params)
-        if not (user is not None and auth.can_settings(user)):
+        if not auth.is_admin(user) or must_enrol_2fa(user):
             if wants_html:
                 return HTMLResponse(
                     _render_denied_page(), status_code=403,
                     headers={"Content-Security-Policy": _DENIED_CSP})
-            require_settings(request)   # non-browser: the usual JSON 403
+            require_admin(request)   # non-browser: the usual JSON 403
         snap = pipeline.voter.status_snapshot()
         if wants_html:
             return HTMLResponse(_render_voter_page(snap))
@@ -1303,7 +1642,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/settings/voter_idle")
     async def set_voter_idle(body: VoterIdleBody, request: Request):
-        require_settings(request)
+        require_admin(request)
         db.set_setting("voter_idle_timeout", "on" if body.enabled else "off")
         mins = None
         if body.minutes is not None:
@@ -1315,7 +1654,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/settings/voter_disabled")
     async def set_voter_disabled(body: VoterDisableBody, request: Request):
-        require_settings(request)
+        require_admin(request)
         db.set_setting("voter_polling_disabled",
                        "on" if body.disabled else "off")
         pipeline.voter.set_disabled(body.disabled)
@@ -1394,6 +1733,7 @@ def create_app(cfg: Config) -> FastAPI:
         require_admin(request)
         counts = await asyncio.to_thread(db.reset_all_voiceprints)
         log.warning("all voiceprints reset by admin: %s", counts)
+        audit(request, "voiceprints_reset_all", str(counts))
         await broadcaster.send("feed_reload", {})
         return {"ok": True, **counts}
 
@@ -1411,12 +1751,12 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/watchlist")
     async def get_watchlist(request: Request):
-        user = require_admin(request)
+        user = require_login(request)
         return {"watchlist": await asyncio.to_thread(db.list_watchlist, user)}
 
     @app.post("/api/watchlist")
     async def add_watch(body: WatchBody, request: Request):
-        user = require_admin(request)
+        user = require_login(request)
         kind = body.kind
         if kind not in ("callsign", "mdc_unit", "emergency", "speaker"):
             raise HTTPException(status_code=400, detail="unknown watch kind")
@@ -1433,7 +1773,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.delete("/api/watchlist/{watch_id}")
     async def del_watch(watch_id: int, request: Request):
-        user = require_admin(request)
+        user = require_login(request)
         if not await asyncio.to_thread(db.delete_watch, watch_id, user):
             raise HTTPException(status_code=404, detail="no such watch")
         return {"ok": True}
@@ -1441,7 +1781,7 @@ def create_app(cfg: Config) -> FastAPI:
     @app.post("/api/watchlist/{watch_id}/enabled")
     async def set_watch_enabled(watch_id: int, body: WatchEnableBody,
                                 request: Request):
-        user = require_admin(request)
+        user = require_login(request)
         if not await asyncio.to_thread(
                 db.set_watch_enabled, watch_id, body.enabled, user):
             raise HTTPException(status_code=404, detail="no such watch")
@@ -1451,13 +1791,13 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/cases")
     async def list_cases_ep(request: Request, status: str | None = None):
-        require_settings(request)
+        require_admin(request)
         return {"cases": await asyncio.to_thread(db.list_cases, status),
                 "statuses": list(CASE_STATUSES)}
 
     @app.post("/api/cases")
     async def create_case_ep(body: CaseBody, request: Request):
-        user = require_settings(request)
+        user = require_admin(request)
         title = body.title.strip()
         if not title:
             raise HTTPException(status_code=400, detail="title required")
@@ -1467,7 +1807,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/cases/{case_id}")
     async def get_case_ep(case_id: int, request: Request):
-        require_settings(request)
+        require_admin(request)
         case = await asyncio.to_thread(db.get_case, case_id)
         if not case:
             raise HTTPException(status_code=404, detail="no such case")
@@ -1475,7 +1815,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.patch("/api/cases/{case_id}")
     async def update_case_ep(case_id: int, body: CaseUpdateBody, request: Request):
-        user = require_settings(request)
+        user = require_admin(request)
         fields: dict = {}
         for k in ("title", "status", "subject", "summary"):
             v = getattr(body, k)
@@ -1496,11 +1836,12 @@ def create_app(cfg: Config) -> FastAPI:
         require_super(request)             # deleting a case file is super-admin only
         if not await asyncio.to_thread(db.delete_case, case_id):
             raise HTTPException(status_code=404, detail="no such case")
+        audit(request, "case_deleted", f"case {case_id}")
         return {"ok": True}
 
     @app.post("/api/cases/{case_id}/items")
     async def add_case_item_ep(case_id: int, body: CaseItemBody, request: Request):
-        user = require_settings(request)
+        user = require_admin(request)
         r = await asyncio.to_thread(db.add_case_item, case_id, body.tx_id,
                                     body.label.strip(), body.note.strip(), user)
         if r is None:
@@ -1512,7 +1853,7 @@ def create_app(cfg: Config) -> FastAPI:
     @app.post("/api/cases/{case_id}/items/bulk")
     async def add_case_items_ep(case_id: int, body: BulkCaseItemsBody,
                                 request: Request):
-        user = require_settings(request)
+        user = require_admin(request)
         r = await asyncio.to_thread(db.add_case_items, case_id, body.tx_ids,
                                     body.label.strip(), body.note.strip(), user)
         if r is None:
@@ -1523,7 +1864,7 @@ def create_app(cfg: Config) -> FastAPI:
     @app.patch("/api/cases/{case_id}/items/{item_id}")
     async def update_case_item_ep(case_id: int, item_id: int,
                                   body: CaseItemPatch, request: Request):
-        require_settings(request)
+        require_admin(request)
         fields = {k: v.strip() for k, v in
                   (("label", body.label), ("note", body.note)) if v is not None}
         if not fields:
@@ -1535,14 +1876,14 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.delete("/api/cases/{case_id}/items/{item_id}")
     async def remove_case_item_ep(case_id: int, item_id: int, request: Request):
-        user = require_settings(request)
+        user = require_admin(request)
         if not await asyncio.to_thread(db.remove_case_item, case_id, item_id, user):
             raise HTTPException(status_code=404, detail="no such evidence item")
         return {"ok": True, "case": await asyncio.to_thread(db.get_case, case_id)}
 
     @app.post("/api/cases/{case_id}/notes")
     async def add_case_note_ep(case_id: int, body: CaseNoteBody, request: Request):
-        user = require_settings(request)
+        user = require_admin(request)
         text = body.text.strip()
         if not text:
             raise HTTPException(status_code=400, detail="note text required")
@@ -1554,14 +1895,14 @@ def create_app(cfg: Config) -> FastAPI:
     async def case_similar_ep(case_id: int, request: Request, limit: int = 50):
         # voiceprint review queue for the case — recordings that sound like its
         # evidence, for the investigator to listen to and file or dismiss.
-        require_settings(request)
+        require_admin(request)
         if not await asyncio.to_thread(db.get_case, case_id):
             raise HTTPException(status_code=404, detail="no such case")
         return await asyncio.to_thread(db.case_similar, case_id, min(max(limit, 1), 100))
 
     @app.post("/api/cases/{case_id}/dismiss")
     async def case_dismiss_ep(case_id: int, body: CaseDismissBody, request: Request):
-        user = require_settings(request)
+        user = require_admin(request)
         if not await asyncio.to_thread(db.get_case, case_id):
             raise HTTPException(status_code=404, detail="no such case")
         await asyncio.to_thread(db.dismiss_case_candidate, case_id, body.tx_id, user)
@@ -1574,7 +1915,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/cases/{case_id}/export")
     async def export_case_ep(case_id: int, request: Request):
-        require_settings(request)
+        require_admin(request)
         case = await asyncio.to_thread(db.get_case, case_id)
         if not case:
             raise HTTPException(status_code=404, detail="no such case")
@@ -1585,7 +1926,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/cases/{case_id}/export.zip")
     async def export_case_zip_ep(case_id: int, request: Request):
-        require_settings(request)
+        require_admin(request)
         case = await asyncio.to_thread(db.get_case, case_id)
         if not case:
             raise HTTPException(status_code=404, detail="no such case")
@@ -1623,13 +1964,13 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/push/vapid")
     async def push_vapid(request: Request):
-        require_admin(request)  # you must be logged in to receive alerts
+        require_login(request)  # you must be logged in to receive alerts
         pub, _ = await asyncio.to_thread(webpush.get_or_create_keys, db)
         return {"key": pub, "enabled": webpush.available()}
 
     @app.post("/api/push/subscribe")
     async def push_subscribe(body: PushSubBody, request: Request):
-        user = require_admin(request)
+        user = require_login(request)
         ua = request.headers.get("user-agent", "")[:200]
         await asyncio.to_thread(
             db.add_push_subscription, body.endpoint,
@@ -1638,7 +1979,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/push/unsubscribe")
     async def push_unsubscribe(body: PushUnsubBody, request: Request):
-        require_admin(request)
+        require_login(request)
         await asyncio.to_thread(db.delete_push_subscription, body.endpoint)
         return {"ok": True}
 
@@ -1653,6 +1994,7 @@ def create_app(cfg: Config) -> FastAPI:
         existing = await asyncio.to_thread(db.find_speaker_by_label, label)
         if existing is not None and existing != speaker_id:
             await asyncio.to_thread(db.merge_speakers, speaker_id, existing)
+            audit(request, "speakers_merged", f"{speaker_id} into {existing}")
             await broadcaster.send("feed_reload", {})
             pipeline.revisit_soon()   # merged profile may resolve old unknowns
             return {"ok": True, "merged_into": existing}
@@ -1678,6 +2020,7 @@ def create_app(cfg: Config) -> FastAPI:
         # print too far gone to salvage by rebuild
         require_admin(request)
         await asyncio.to_thread(db.clear_speaker_profile, speaker_id)
+        audit(request, "voiceprint_reset", f"speaker {speaker_id}")
         await broadcaster.send("feed_reload", {})
         return {"ok": True}
 
@@ -1703,7 +2046,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/settings/logo")
     async def set_logo(file: UploadFile, request: Request):
-        require_settings(request)
+        require_admin(request)
         ext = LOGO_TYPES.get(file.content_type or "")
         if ext is None:
             raise HTTPException(
@@ -1721,12 +2064,13 @@ def create_app(cfg: Config) -> FastAPI:
         ts = str(int(time.time()))
         db.set_setting("logo_ext", ext)
         db.set_setting("logo_ts", ts)
+        audit(request, "logo_changed", ext)
         await broadcaster.send("branding_changed", {"logo_ts": ts})
         return {"ok": True}
 
     @app.delete("/api/settings/logo")
     async def reset_logo(request: Request):
-        require_settings(request)
+        require_admin(request)
         path = _logo_path()
         if path is not None:
             path.unlink(missing_ok=True)
@@ -1747,7 +2091,7 @@ def create_app(cfg: Config) -> FastAPI:
     @app.get("/api/account/avatar")
     async def get_avatar(request: Request):
         # a logged-in account's own picture (used by the header tile)
-        user = require_admin(request)
+        user = require_login(request)
         path = _avatar_path(user)
         if path is None:
             raise HTTPException(status_code=404, detail="no profile picture")
@@ -1757,7 +2101,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/account/avatar")
     async def set_avatar(file: UploadFile, request: Request):
-        user = require_admin(request)
+        user = require_login(request)
         ext = AVATAR_TYPES.get(file.content_type or "")
         if ext is None:
             raise HTTPException(
@@ -1779,7 +2123,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.delete("/api/account/avatar")
     async def delete_avatar(request: Request):
-        user = require_admin(request)
+        user = require_login(request)
         path = _avatar_path(user)
         if path is not None:
             path.unlink(missing_ok=True)
@@ -1791,7 +2135,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/settings/whisper_model")
     async def set_model(body: ModelBody, request: Request):
-        require_settings(request)
+        require_admin(request)
         try:
             pipeline.set_whisper_model(body.model)
         except ValueError as e:
@@ -1801,7 +2145,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/settings/theme")
     async def set_theme(body: ThemeBody, request: Request):
-        require_settings(request)
+        require_admin(request)
         if body.theme not in THEMES:
             raise HTTPException(status_code=400, detail="unknown theme")
         db.set_setting("theme", body.theme)
@@ -1810,9 +2154,10 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/settings/footer")
     async def set_footer(body: TextBody, request: Request):
-        require_settings(request)
-        text = body.text.strip()
+        require_admin(request)
+        text = body.text.strip()[:500]
         db.set_setting("footer_text", text)
+        audit(request, "footer_changed")
         await broadcaster.send("footer_changed", {"text": text})
         return {"ok": True}
 
@@ -1821,7 +2166,7 @@ def create_app(cfg: Config) -> FastAPI:
         # QRZ XML Data credentials (the user's qrz.com LOGIN — the XML API
         # trades it for a session key; requires an XML/premium subscription).
         # Blank both to disable and fall back to the free FCC feed.
-        require_settings(request)
+        require_admin(request)
         user, pw = body.username.strip(), body.password
         changed = (user != db.get_setting("qrz_username", "")
                    or (pw != "" and pw != db.get_setting("qrz_password", "")))
@@ -1829,6 +2174,7 @@ def create_app(cfg: Config) -> FastAPI:
         if pw or not user:              # keep the stored password when only
             db.set_setting("qrz_password", pw)   # re-saving the username
         qrz.reset_session()
+        audit(request, "qrz_credentials_changed", f"username={user[:40]}")
         requeued = 0
         if changed and user and db.get_setting("qrz_password", ""):
             # refresh existing entries so they pick up email/photo
@@ -1840,8 +2186,8 @@ def create_app(cfg: Config) -> FastAPI:
     async def set_branding(body: BrandBody, request: Request):
         # the subtitle under "Squelch": a callsign and a node number, each
         # blank = fall back to the node's configured value
-        require_settings(request)
-        cs, node = body.callsign.strip(), body.node.strip()
+        require_admin(request)
+        cs, node = body.callsign.strip()[:40], body.node.strip()[:40]
         db.set_setting("brand_callsign", cs)
         db.set_setting("brand_node", node)
         await broadcaster.send("subline_changed", {"callsign": cs, "node": node})
@@ -1849,20 +2195,53 @@ def create_app(cfg: Config) -> FastAPI:
 
     # ---- websocket ----
 
+    _bg_tasks: set = set()
+
+    def _spawn(coro) -> None:
+        # fire-and-forget that survives the caller being cancelled
+        try:
+            task = asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            coro.close()
+            return
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
+
+    async def _ws_session_watch(ws: WebSocket, token: str | None) -> None:
+        # a socket outlives the request that opened it: re-check its session
+        # every minute so a logout, password change or revoke closes it
+        try:
+            while True:
+                await asyncio.sleep(60)
+                if await asyncio.to_thread(auth.verify_token, token) is None:
+                    await ws.close(code=4401)
+                    return
+        except Exception:
+            return
+
     @app.websocket("/ws")
     async def websocket(ws: WebSocket):
-        # the live feed is public, but voter RSSI (admin-only, feeds geo) is
-        # stripped for unauthenticated sockets by the broadcaster
-        user = auth.verify_token(ws.cookies.get(SESSION_COOKIE))
+        # the live feed is public unless [web] require_login is on; voter
+        # RSSI (feeds geo) is stripped for unauthenticated sockets by the
+        # broadcaster either way
+        token = ws.cookies.get(SESSION_COOKIE)
+        user = auth.verify_token(token)
+        if user is not None and must_enrol_2fa(user):
+            user = None
+        if cfg.require_login and user is None:
+            await ws.close(code=4401)       # rejected before accept (HTTP 403)
+            return
         await ws.accept()
         broadcaster.add(ws, is_admin=user is not None, username=user,
-                        can_settings=auth.can_settings(user))
+                        can_settings=auth.is_admin(user))
+        watch = (asyncio.create_task(_ws_session_watch(ws, token))
+                 if user is not None else None)
         # record the connection for the log + bump everyone's live counter
         conn_id = None
         try:
             conn_id = await asyncio.to_thread(
-                db.connection_open, _peer_ip(ws.headers, ws.client), user,
-                ws.headers.get("user-agent"), time.time())
+                db.connection_open, proxy.client_ip(ws.headers, ws.client),
+                user, ws.headers.get("user-agent"), time.time())
         except Exception:
             log.exception("failed to log connection open")
         await broadcaster.broadcast_presence()
@@ -1872,18 +2251,32 @@ def create_app(cfg: Config) -> FastAPI:
         except WebSocketDisconnect:
             pass
         finally:
+            if watch is not None:
+                watch.cancel()
             broadcaster.remove(ws)
+            # No awaits here: this handler may be getting cancelled (server
+            # shutdown, or the ASGI server tearing the socket down), and an
+            # await in a cancelled task never completes — which would leave
+            # the connection row open forever. The close is one small write.
             if conn_id is not None:
                 try:
-                    await asyncio.to_thread(
-                        db.connection_close, conn_id, time.time())
+                    db.connection_close(conn_id, time.time())
                 except Exception:
                     log.exception("failed to log connection close")
-            await broadcaster.broadcast_presence()
+            _spawn(broadcaster.broadcast_presence())
 
     @app.websocket("/ws/audio")
     async def audio_stream(ws: WebSocket):
-        """Binary PCM stream for the Listen Live feature (public — no auth)."""
+        """Binary PCM stream for the Listen Live feature. Public like the
+        feed, unless [web] require_login is on."""
+        watch = None
+        if cfg.require_login:
+            token = ws.cookies.get(SESSION_COOKIE)
+            user = auth.verify_token(token)
+            if user is None or must_enrol_2fa(user):
+                await ws.close(code=4401)
+                return
+            watch = asyncio.create_task(_ws_session_watch(ws, token))
         await ws.accept()
         live_audio.add(ws)
         try:
@@ -1892,6 +2285,8 @@ def create_app(cfg: Config) -> FastAPI:
         except WebSocketDisconnect:
             pass
         finally:
+            if watch is not None:
+                watch.cancel()
             live_audio.remove(ws)
 
     # hashed Next.js assets (JS/CSS chunks) referenced as /_next/... by the

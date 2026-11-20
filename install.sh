@@ -55,18 +55,39 @@ if [[ ! -d "$VENV_DIR" ]]; then
     python3 -m venv "$VENV_DIR"
 fi
 "$VENV_DIR/bin/pip" install --upgrade pip wheel
-"$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt"
+# requirements.lock pins every package (and its hash) for Debian 13's Python
+# 3.13 on x86-64, so the install is reproducible and tamper-evident. Anything
+# else (another Python, ARM) resolves from requirements.txt instead.
+PYVER="$("$VENV_DIR/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+# SQUELCH_NO_LOCK=1 skips the lock (e.g. to keep a CPU-only torch you installed).
+if [[ -z "${SQUELCH_NO_LOCK:-}" && -f "$SRC_DIR/requirements.lock" && "$PYVER" == "3.13" && "$(uname -m)" == "x86_64" ]]; then
+    echo "    using the hash-checked lockfile (requirements.lock)"
+    "$VENV_DIR/bin/pip" install --require-hashes -r "$SRC_DIR/requirements.lock"
+else
+    echo "    NOTE: not using requirements.lock (built for Python 3.13 / x86_64; this is"
+    echo "          $PYVER / $(uname -m), or SQUELCH_NO_LOCK is set) — resolving from"
+    echo "          requirements.txt instead (not hash-checked)"
+    "$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt"
+fi
 
 echo "==> data + config directories"
 mkdir -p "$DATA_DIR" "$CONF_DIR"
 chown -R squelch:squelch "$DATA_DIR"
 if [[ ! -f "$CONF_DIR/squelch.toml" ]]; then
     cp "$SRC_DIR/config.example.toml" "$CONF_DIR/squelch.toml"
+    # a fresh random secret for the node's reporters (mdc_forward.py /
+    # source_monitor.py). The server refuses their reports without it.
+    REPORTER_TOKEN="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    sed -i "s/^forward_token = \"\"/forward_token = \"$REPORTER_TOKEN\"/" "$CONF_DIR/squelch.toml"
     chown root:squelch "$CONF_DIR/squelch.toml"
     chmod 640 "$CONF_DIR/squelch.toml"
-    echo "    -> created $CONF_DIR/squelch.toml  (EDIT THIS: node number,"
-    echo "       callsign, admin password)"
+    echo "    -> created $CONF_DIR/squelch.toml  (EDIT THIS: node number, callsign)"
+    echo "       with a generated reporter token ([mdc] forward_token)"
 fi
+# config holds secrets: root-owned, readable by the service only
+chown root:squelch "$CONF_DIR/squelch.toml"
+chmod 640 "$CONF_DIR/squelch.toml"
+chmod 750 "$DATA_DIR"
 
 # GPU acceleration (optional): if an NVIDIA GPU is present, install the systemd
 # drop-ins that make CUDA reliable — the venv's bundled nvidia libs on
@@ -115,10 +136,15 @@ fi
 cat <<EOF
 
 Done. Next steps:
-  1. Edit /etc/squelch/squelch.toml (node number, callsign, admin_password)
+  1. Edit /etc/squelch/squelch.toml (node number, callsign)
   2. systemctl start squelch
-  3. Browse to http://<this-vm>:8080
-  4. Configure the Pi to stream audio here (see README, "AllStar node setup")
+  3. Browse to http://<this-vm>:8080 and create the administrator account.
+     The setup wizard asks for a one-time setup code that only this server
+     knows:      sudo cat /var/lib/squelch/setup-code
+  4. Configure the Pi to stream audio here (see README, "AllStar node setup").
+     Its reporters need the token from [mdc] forward_token in the config.
+  5. Before exposing it beyond your LAN, read README "Security & deployment"
+     (HTTPS, private mode, two-factor, [usrp] allow_from).
 
   NOTE: the node's audio arrives on UDP 32001. If a firewall is enabled
   here, it MUST allow that port from the node, or audio silently never

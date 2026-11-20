@@ -25,6 +25,9 @@ class Config:
     # [usrp]
     usrp_bind: str = "0.0.0.0"
     usrp_port: int = 32001
+    # IPs / CIDRs allowed to send audio frames. Empty = accept any sender
+    # (rely on the firewall). Set it to the node's address to drop the rest.
+    usrp_allow_from: list = field(default_factory=list)
 
     # [audio]
     data_dir: Path = Path("/var/lib/squelch")
@@ -226,6 +229,29 @@ class Config:
     # value wins
     site_name: str = "Squelch"
     footer_text: str = ""
+    # Private mode: nothing is readable without logging in (feed, recordings,
+    # logbook, speakers, live audio). Off = the public, receive-only view.
+    require_login: bool = False
+    # Reverse proxies whose X-Forwarded-For / X-Forwarded-Proto are believed
+    # (IPs or CIDRs). Anything else claiming a forwarded address is ignored,
+    # so a client can't forge its IP to dodge the login throttle.
+    trusted_proxies: list = field(
+        default_factory=lambda: ["127.0.0.1", "::1"])
+    # behind a TLS-terminating proxy (Cloudflare tunnel / nginx): redirect
+    # requests the proxy received over plain HTTP (X-Forwarded-Proto: http)
+    # to HTTPS and send HSTS. Off by default: an http-only LAN proxy would
+    # otherwise redirect to an HTTPS that doesn't exist.
+    force_https: bool = False
+    # serve HTTPS directly (no proxy): PEM certificate chain + private key
+    tls_cert: str = ""
+    tls_key: str = ""
+    # sessions: absolute lifetime, and how long one may sit unused
+    session_days: float = 7.0
+    session_idle_hours: float = 24.0
+    min_password_len: int = 12
+    # require every account to enrol an authenticator app (TOTP) before it
+    # can do anything else
+    require_2fa: bool = False
 
     @property
     def audio_dir(self) -> Path:
@@ -251,6 +277,8 @@ def load_config(path: str | Path) -> Config:
     usrp = raw.get("usrp", {})
     cfg.usrp_bind = usrp.get("bind", cfg.usrp_bind)
     cfg.usrp_port = int(usrp.get("port", cfg.usrp_port))
+    cfg.usrp_allow_from = [str(x) for x in
+                           usrp.get("allow_from", cfg.usrp_allow_from)]
 
     audio = raw.get("audio", {})
     cfg.data_dir = Path(audio.get("data_dir", cfg.data_dir))
@@ -391,5 +419,17 @@ def load_config(path: str | Path) -> Config:
     cfg.admin_password = web.get("admin_password", cfg.admin_password)
     cfg.site_name = web.get("site_name", cfg.site_name)
     cfg.footer_text = web.get("footer_text", cfg.footer_text)
+    cfg.require_login = bool(web.get("require_login", cfg.require_login))
+    cfg.trusted_proxies = [str(x) for x in
+                           web.get("trusted_proxies", cfg.trusted_proxies)]
+    cfg.force_https = bool(web.get("force_https", cfg.force_https))
+    cfg.tls_cert = str(web.get("tls_cert", cfg.tls_cert))
+    cfg.tls_key = str(web.get("tls_key", cfg.tls_key))
+    cfg.session_days = float(web.get("session_days", cfg.session_days))
+    cfg.session_idle_hours = float(
+        web.get("session_idle_hours", cfg.session_idle_hours))
+    cfg.min_password_len = max(8, int(
+        web.get("min_password_len", cfg.min_password_len)))
+    cfg.require_2fa = bool(web.get("require_2fa", cfg.require_2fa))
 
     return cfg

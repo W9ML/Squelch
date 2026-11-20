@@ -189,6 +189,11 @@ def main():
                          "(e.g. your squelch listener node)")
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
+    if not args.token:
+        sys.exit("no token: squelch refuses reports without one. Set [mdc] "
+                 "forward_token on the squelch server and pass the same value "
+                 "here with --token or the SQUELCH_MDC_TOKEN environment "
+                 "variable.")
 
     if not args.user or not args.secret:
         args.user, args.secret = parse_manager_conf()

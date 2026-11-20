@@ -75,18 +75,23 @@ it can hear the repeater but can never key it up.
 ```sh
 git clone <this repo> squelch && cd squelch     # or copy the folder over
 sudo ./install.sh
-sudo nano /etc/squelch/squelch.toml             # node number, callsign, admin password
+sudo nano /etc/squelch/squelch.toml             # node number, callsign
 sudo systemctl start squelch
+sudo cat /var/lib/squelch/setup-code            # one-time code for the setup wizard
 ```
 
-Open `http://<vm-ip>:8080`. The status dot will be gray until the node
-starts streaming audio.
+Open `http://<vm-ip>:8080`. The first visit shows a setup wizard that creates
+the administrator account; it asks for the **setup code** printed above, so
+only someone with access to the server can claim a fresh install. The status
+dot will be gray until the node starts streaming audio.
 
 If the VM has a firewall, allow UDP 32001 (audio from the Pi) and TCP
-8080 (web).
+8080 (web). Before exposing Squelch beyond your LAN, read
+[Security & deployment](#security--deployment).
 
 `install.sh` installs the system deps, builds the web UI (fetching Node.js if a
-prebuilt `web/out` isn't present), creates the Python venv, and installs the
+prebuilt `web/out` isn't present), creates the Python venv from the hash-checked
+`requirements.lock`, generates the reporter token, and installs the
 `squelch` systemd service. On an NVIDIA box it also drops in the CUDA service
 units from `deploy/gpu/`.
 
@@ -98,7 +103,10 @@ adjustable at runtime from the admin **Settings** panel. The essentials:
 
 - `[node]` — your node number and callsign (shown in the header)
 - `[transcribe]` — Whisper `model` and `device` (`cpu` or `cuda`)
-- `[web]` — `admin_password` (bootstraps the first admin) and `site_name`
+- `[web]` — `site_name`, plus the access and transport settings described in
+  [Security & deployment](#security--deployment): `require_login` (private
+  mode), `require_2fa`, `force_https` / `tls_cert`, `trusted_proxies`
+- `[mdc] forward_token` — the secret the node's reporters must send
 
 Optional features are config-gated and stay off until you enable them: voter RSSI
 + fuzzy geolocation (`[voter]`), live captions (`[captions]`), MDC forwarding
@@ -174,9 +182,18 @@ transcription and voice clustering work.
 - **Live feed** — transmissions appear as they happen; the red banner
   shows while the node is receiving. Use ⏸ to pause the feed and the
   search box to search transcripts (full-text).
-- **Admin login** — click **Login**, enter a username and password. The
-  first login uses `admin` + the `admin_password` from the config; from
-  then on you manage accounts in the UI.
+- **Login** — click **Login**, enter a username and password (and your
+  authenticator code, if you turned on two-factor). The first account is
+  created by the setup wizard; after that a super admin manages accounts in
+  the UI. There are three roles:
+  - **User** — view only. Sees what any visitor sees plus login-gated views
+    (voter panel, MP3 download), and manages their *own* alerts, password and
+    two-factor. Cannot change or delete anything shared. In private mode this
+    is the account you give people who only need to look.
+  - **Admin** — runs the site: names speakers, links MDC units, deletes /
+    purges / reprocesses recordings, changes settings, works Cases.
+  - **Super admin** — an admin who also manages accounts, deletes case files
+    and reads the audit log.
 - **Name a voice** — (admin) click the speaker chip on any
   transmission. *Rename voice* relabels that cluster everywhere;
   *Assign this TX* moves just that transmission to a person (and folds
@@ -194,8 +211,8 @@ transcription and voice clustering work.
   > **Note:** MP3 export shells out to `ffmpeg` per request and buffers
   > the whole encoded file in memory before sending it. That's fine for
   > occasional one-off downloads, but it isn't built for many
-  > simultaneous exports on a small VM. It's admin-only, so bear it in
-  > mind when handing out admin logins.
+  > simultaneous exports on a small VM. It needs a login, so bear it in
+  > mind when handing out accounts.
 
   A recording that's filed as case evidence can't be deleted or purged
   (the app returns a 409) — unfile it from the case first. This is what
@@ -217,8 +234,17 @@ transcription and voice clustering work.
     default; each viewer can also pick their own from the header.
   - **Logo** — upload a PNG/JPEG/SVG/WebP to replace the top-left mark.
   - **Footer text** — the "System maintained by…" line at the bottom.
-  - **Change password** and **Users** — add or remove logins (you can't
-    delete yourself or the last account).
+  - **Change password** — also signs out every other device you're logged
+    in on.
+  - **Two-factor sign-in** — enrol an authenticator app (TOTP); from then on
+    logging in needs your password and a 6-digit code.
+  - **Where you're signed in** — your open sessions, with *Sign out everywhere
+    else*.
+  - **Users** — (super admin) add or remove logins, change roles, sign a user
+    out, or reset a lost authenticator (you can't delete yourself or the last
+    account).
+  - **Audit log** — (super admin) who signed in, failed to, changed an account
+    or deleted / purged anything — with the time and the address it came from.
 
 ## How voice ID works
 
@@ -326,6 +352,83 @@ show the opcode and hex unit ID.
 | No MDC decodes | Confirm bursts survive to the stream: generate a test WAV (above) — if that decodes, the repeater is muting MDC on air. |
 | Slow / backlog ("processing N") | Use a smaller Whisper model or give the VM more cores. |
 
+## Security & deployment
+
+Squelch is **receive-only** — it has no code path that can key the node — but
+it is still a web application holding recordings and logins. Out of the box it
+is safe to run on a trusted LAN; do the following before it is reachable from
+anywhere else. Report vulnerabilities per [SECURITY.md](SECURITY.md).
+
+**What a default install already does**
+
+- No default credentials. The first account is created by the setup wizard and
+  needs the one-time setup code from the server. A known-default
+  `admin_password` in the config is refused, not used.
+- Passwords: scrypt-hashed, 12+ characters, known defaults rejected. Logins are
+  rate-limited per client address.
+- Sessions: random tokens stored server-side as hashes, `HttpOnly` +
+  `SameSite=Lax` cookies (and `Secure` over HTTPS), 7-day lifetime, 24-hour idle
+  timeout. Logout, a password change, or a super admin ends them immediately.
+- The node's reporter endpoints (`/api/mdc`, `/api/source`, `/api/link`) refuse
+  everything without the shared `[mdc] forward_token` (install.sh generates one).
+- A strict Content-Security-Policy (no inline script), no-store API responses,
+  parameterized SQL, an SSRF guard on alert webhooks, and a sandboxed systemd
+  unit running as an unprivileged user.
+- An audit log of sign-ins, account changes and destructive actions.
+
+**What you must decide**
+
+1. **Encrypt it.** Never let a login cross an untrusted network in clear text.
+   Either put a TLS-terminating reverse proxy in front (Cloudflare Tunnel,
+   nginx, Caddy) and set `force_https = true`, or serve HTTPS directly with
+   `tls_cert` / `tls_key`. With a proxy on the same machine, bind Squelch to
+   loopback (`[web] bind = "127.0.0.1"`) so the proxy is the only way in.
+2. **Tell it about your proxy.** `trusted_proxies` lists the addresses whose
+   `X-Forwarded-For` / `X-Forwarded-Proto` are believed (default: loopback).
+   If your proxy runs on another host, add its address — otherwise every
+   visitor appears to come from the proxy and shares one login-throttle bucket.
+   Forwarded headers from anyone *not* in the list are ignored, so a client
+   can't forge its address.
+3. **Public or private?** By default the feed is public, like the repeater it
+   monitors. Set `require_login = true` for **private mode**: the feed,
+   recordings, logbook, speakers, statistics and live audio are then served
+   only to logged-in accounts, and anonymous visitors see just a sign-in page.
+   Give view-only people a **User** account.
+4. **Two-factor.** Each account can enrol an authenticator app from Settings.
+   Set `require_2fa = true` to make it mandatory for everyone. A super admin
+   can reset a lost authenticator from Users; if the only super admin is locked
+   out, run `sudo -u squelch /opt/squelch/venv/bin/python -m squelch --reset-2fa <username>`
+   on the server.
+5. **Lock down the audio port.** UDP 32001 accepts audio from any sender that
+   can reach it. Set `[usrp] allow_from = ["<node-ip>"]`, and/or firewall the
+   port to the node.
+6. **Give the reporters the token.** If you run `mdc_forward.py` /
+   `source_monitor.py` on the node, pass them the value of `[mdc] forward_token`
+   (see the unit files in `deploy/`). Rotate it by changing both sides.
+
+**Recommended layouts**
+
+| Where | Setup |
+|---|---|
+| Home LAN only | defaults; firewall 8080 and 32001 to the LAN |
+| Internet, public feed | Cloudflare Tunnel or nginx + cert on the same box, `bind = "127.0.0.1"`, `force_https = true`, two-factor on every admin |
+| Private / restricted access | as above, plus `require_login = true`, `require_2fa = true`, `[usrp] allow_from`, and your organisation's SSO in front of the proxy if you have one |
+
+**Good to know**
+
+- Outbound connections: Hugging Face (Whisper model download, first use of each
+  model), `allmondb.allstarlink.org` (node names, daily), `callook.info` / QRZ
+  (callsign lookups — heard callsigns are sent there; disable under
+  `[callbook]`), and — only if you enable them — your voter source, MQTT broker,
+  alert webhooks and ElevenLabs. Browsers additionally load Google Fonts, map
+  tiles (Esri) and QRZ profile photos.
+- Upgrading from 1.x: everyone is signed out once (sessions moved server-side);
+  reporters need the token; and **User** accounts become view-only. See the
+  [v2.0.0 release notes](https://github.com/W9ML/Squelch/releases/tag/v2.0.0).
+- Squelch has no built-in single sign-on. To use your organisation's identity
+  provider, put an authenticating proxy (Cloudflare Access, oauth2-proxy,
+  Authelia) in front of it.
+
 ## Development
 
 ```sh
@@ -334,6 +437,12 @@ pip install -r requirements.txt pytest httpx
 pytest
 python -m squelch -c config.example.toml   # needs data_dir you can write to
 ```
+
+Dependencies are pinned: `requirements.txt` holds the direct ones,
+`requirements.lock` the full hash-checked set `install.sh` installs (its header
+says how to regenerate it), and `web/package-lock.json` the frontend. CI runs
+the security tests, builds the frontend, and audits both dependency sets on
+every push.
 
 ## Contributing
 

@@ -14,8 +14,11 @@ Type=simple
 ExecStart=/usr/bin/python3 /usr/local/bin/squelch-mdc-forward \
     --log /var/log/asterisk/mdc.log \
     --url http://<vm-ip>:8080
-# if you set [mdc] forward_token in squelch.toml, pass it here too:
-# Environment=SQUELCH_MDC_TOKEN=yoursecret
+# REQUIRED: the same value as [mdc] forward_token in the server's squelch.toml
+# (the server refuses reports without it). Keep it out of this world-readable
+# unit file — put it in a root-only env file:
+#   printf 'SQUELCH_MDC_TOKEN=%s\n' '<token>' | sudo install -m 600 /dev/stdin /etc/squelch-reporter.env
+EnvironmentFile=/etc/squelch-reporter.env
 Restart=always
 RestartSec=5
 User=root

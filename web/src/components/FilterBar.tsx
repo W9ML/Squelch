@@ -33,7 +33,7 @@ function labelFor(
 }
 
 function SpeakerBanner({ speakerId }: { speakerId: number }) {
-  const { isAdmin, openModal, speakers } = useApp();
+  const { canSettings, openModal, speakers } = useApp();
   const [s, setS] = useState<SpeakerDetail | null>(null);
 
   useEffect(() => {
@@ -67,7 +67,7 @@ function SpeakerBanner({ speakerId }: { speakerId: number }) {
           ))}
         </div>
       </div>
-      {isAdmin && (
+      {canSettings && (
         <button
           className="text-btn"
           onClick={() =>

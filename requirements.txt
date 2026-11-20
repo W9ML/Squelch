@@ -11,7 +11,7 @@ uvicorn[standard]~=0.54.0
 python-multipart~=0.0.34
 cryptography>=50.0.2,<51
 numpy>=2.0,<3
-scipy>=1.14,<2
+scipy>=1.18.1,<2
 # voter SSE streaming (VoterCollector). Only needed when [voter] sources are
 # configured, but declared so a fresh install doesn't crash on import.
 requests~=2.34

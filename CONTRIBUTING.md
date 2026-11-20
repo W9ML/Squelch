@@ -34,4 +34,5 @@ hashes for its inline bootstrap scripts are computed at startup.
   regenerate `requirements.lock` (the command is in its header).
 - Frontend: `npm install <pkg>` in `web/` and commit `package-lock.json`.
 
-CI audits both sets (`pip-audit`, `npm audit`) on every push.
+CI audits both sets (`pip-audit`, `npm audit`) on every push and weekly;
+Dependabot opens a pull request when a pinned dependency has a security fix.

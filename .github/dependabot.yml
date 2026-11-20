@@ -1,20 +1,22 @@
-# Dependabot: security + version updates for every dependency set, weekly.
+# Dependabot: security fixes only.
+#
+# "open-pull-requests-limit: 0" turns off routine version-bump pull requests
+# for that ecosystem but leaves Dependabot *security* updates on — a pull
+# request is still opened when a pinned dependency has a published advisory.
+# CI additionally audits both dependency sets weekly.
 version: 2
 updates:
   - package-ecosystem: pip
     directory: "/"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
   - package-ecosystem: npm
     directory: "/web"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
-    groups:
-      react:
-        patterns: ["react", "react-dom", "@types/react", "@types/react-dom"]
+    open-pull-requests-limit: 0
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
+      interval: monthly

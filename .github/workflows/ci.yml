@@ -32,7 +32,7 @@ jobs:
       - name: Byte-compile everything
         run: python -m compileall -q squelch tools
       - name: Security test suite
-        run: pytest -q tests
+        run: python -m pytest -q tests
       - name: Audit every locked Python package for known vulnerabilities
         run: pip-audit -r requirements.lock --require-hashes --disable-pip
 
@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"   # Debian 13 ships 20; any >= 20.9 builds it
+          node-version: "20"   # what Debian 13 ships, i.e. what install.sh builds with
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
